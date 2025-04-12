@@ -98,4 +98,14 @@ class ConfigService {
     var box = await _box;
     box.put("scheduledTaskTime", time);
   }
+
+  Future<bool> getAppInstructions() async {
+    var box = await _box;
+    return box.get("appInstructions", defaultValue: false);
+  }
+
+  Future<void> setAppInstructions(bool read) async {
+    var box = await _box;
+    return box.put("appInstructions", read);
+  }
 }

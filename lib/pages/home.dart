@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
 
@@ -40,7 +42,7 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
   List titles = ["添加", "账单", "账户"];
 
   bool _isReturningFromSettings = false;
-  //  定时器，应用进入后台后一定时间内未被再次打开则彻底退出应用。
+  // 定时器，应用进入后台后一定时间内未被再次打开则彻底退出应用。
   Timer? _exitTimer;
 
   bool isSameDate(DateTime date1, DateTime date2) {
@@ -80,8 +82,30 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
     }
   }
 
+  /// 判断是否需要检测存储权限
+  /// 当设备为 Android 且 API level >= 29 时，不检测存储权限
+  Future<bool> checkAndRequestStoragePermission() async {
+    if (Platform.isAndroid) {
+      final deviceInfo = DeviceInfoPlugin();
+      AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
+      if (androidInfo.version.sdkInt >= 29) {
+        return true;
+      }
+    }
+    PermissionStatus status = await Permission.storage.status;
+    if (status != PermissionStatus.granted) {
+      PermissionStatus requestStatus = await Permission.storage.request();
+      if (requestStatus.isDenied) {
+        return false;
+      } else if (requestStatus.isPermanentlyDenied) {
+        openAppSettings();
+        return false;
+      }
+    }
+    return true;
+  }
+
   @override
-//initState是初始化函数，在绘制底部导航控件的时候就把这3个页面添加到list里面用于下面跟随标签导航进行切换显示
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
@@ -101,6 +125,29 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         }
       });
     }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      bool hasShownInstructions = await ConfigService().getAppInstructions();
+      if (!hasShownInstructions && mounted) {
+        showDialog(
+          context: context,
+          builder: (BuildContext dialogContext) => AlertDialog(
+            title: const Text('说明'),
+            content:
+                const Text('欢迎使用！\n\n1. 自动记录账单需要通知读取权限。\n2. 自动记录账单需要开启自启动。'),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop();
+                  ConfigService().setAppInstructions(true);
+                },
+                child: const Text('好的'),
+              ),
+            ],
+          ),
+        );
+      }
+    });
   }
 
   @override
@@ -163,19 +210,12 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         });
         await NativeMethodChannel.instance.minimizeApp();
       },
-      /*
-    返回一个脚手架，里面包含两个属性，一个是底部导航栏，另一个就是主体内容
-     */
       child: Scaffold(
         appBar: AppBar(
           title: Text(titles[_currentIndex]),
         ),
         endDrawer: Drawer(
-          // Add a ListView to the drawer. This ensures the user can scroll
-          // through the options in the drawer if there isn't enough vertical
-          // space to fit everything.
           child: ListView(
-            // Important: Remove any padding from the ListView.
             padding: EdgeInsets.zero,
             children: [
               const DrawerHeader(
@@ -205,35 +245,27 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
               ListTile(
                 title: const Text('导出账本'),
                 onTap: () async {
-                  PermissionStatus status = await Permission.storage.status;
-                  if (status != PermissionStatus.granted) {
-                    PermissionStatus requestStatus =
-                        await Permission.storage.request();
-                    if (requestStatus.isDenied) {
-                      return;
-                    } else if (requestStatus.isPermanentlyDenied) {
-                      openAppSettings();
-                      return;
-                    }
+                  // 仅在低于API29时检测存储权限
+                  if (!await checkAndRequestStoragePermission()) {
+                    return;
                   }
-                  var targetFile =
-                      File(join(Global.aSdCard, basename(Global.config!.path)));
-                  var sourceFile = File(Global.config!.path);
+                  String fileName = p.basename(Global.config!.path);
                   try {
-                    await sourceFile.copy(targetFile.path);
+                    // 调用平台方法通过 MediaStore API 导出文件到 Downloads 文件夹
+                    String? result = await NativeMethodChannel.instance
+                        .copyToDownloads(Global.config!.path, fileName);
                     var password = await ConfigService().getDBPassword();
-                    if (context.mounted) {
+                    if (result != null && context.mounted) {
                       showDialog(
                         context: context,
                         builder: (BuildContext context) {
                           return AlertDialog(
-                            content:
-                                Text('已导出到：${targetFile.path}\n账本密码：$password'),
+                            content: Text('已导出到：$result\n账本密码：$password'),
                             actions: <Widget>[
                               TextButton(
                                 onPressed: () async {
                                   Navigator.of(context).pop(); // 关闭对话框
-                                  Navigator.of(context).pop(); // 关闭drawer
+                                  Navigator.of(context).pop(); // 关闭 Drawer
                                 },
                                 child: const Text('确定'),
                               ),
@@ -258,6 +290,50 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                   Navigator.of(context)
                       .pushNamed('/statistic')
                       .then((value) => {});
+                },
+              ),
+              ListTile(
+                title: const Text('导出记录'),
+                onTap: () async {
+                  // 仅在低于API29时检测存储权限
+                  if (!await checkAndRequestStoragePermission()) {
+                    return;
+                  }
+
+                  try {
+                    String jsonString = jsonEncode(
+                        await NativeMethodChannel.instance.getBills());
+                    String fileName = "billRecord.json";
+                    // 调用平台方法使用 MediaStore API 将字符串写入到 Downloads 文件夹中的文件
+                    String result = await NativeMethodChannel.instance
+                        .exportJsonToDownloads(jsonString, fileName);
+
+                    if (context.mounted) {
+                      showDialog(
+                        context: context,
+                        builder: (BuildContext context) {
+                          return AlertDialog(
+                            content: Text('已导出到：$result'),
+                            actions: <Widget>[
+                              TextButton(
+                                onPressed: () async {
+                                  Navigator.of(context).pop(); // 关闭对话框
+                                  Navigator.of(context).pop(); // 关闭 Drawer
+                                },
+                                child: const Text('确定'),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+                    }
+                  } catch (e) {
+                    debugPrint("导出错误：$e");
+                    if (context.mounted) {
+                      Navigator.of(context).pop();
+                      showNoticeSnackBar(context, '导出失败');
+                    }
+                  }
                 },
               ),
               if (defaultTargetPlatform == TargetPlatform.android) ...[
@@ -322,7 +398,6 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         ),
         body: pages[_currentIndex],
         bottomNavigationBar: BottomNavigationBar(
-          //底部导航栏的创建需要对应的功能标签作为子项，每个子项包含一个图标和一个title。
           items: const [
             BottomNavigationBarItem(
               icon: Icon(
@@ -343,11 +418,8 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
               label: '账户',
             ),
           ],
-          //这是底部导航栏自带的位标属性，表示底部导航栏当前处于哪个导航标签。给他一个初始值0，也就是默认第一个标签页面。
           currentIndex: _currentIndex,
-          //这是点击属性，会执行带有一个int值的回调函数，这个int值是系统自动返回的你点击的那个标签的位标
           onTap: (int i) {
-            //进行状态更新，将系统返回的你点击的标签位标赋予当前位标属性，告诉系统当前要显示的导航标签被用户改变了。
             setState(() {
               _currentIndex = i;
             });

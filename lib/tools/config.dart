@@ -16,7 +16,6 @@ class Global {
   static bool jumpLoad = false;
   static Map notificationTime = {"hour": 11, "minute": 0, "second": 0};
 
-  static String aSdCard = "/sdcard/Download/";
   static late String externalStorageDirectory;
 
   static Future init() async {

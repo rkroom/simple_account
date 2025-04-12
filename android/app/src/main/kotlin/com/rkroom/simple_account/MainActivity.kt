@@ -7,12 +7,56 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 import android.content.ComponentName
 import android.content.pm.PackageManager;
+import android.provider.MediaStore
+import android.content.ContentValues
+import android.os.Environment
+import android.os.Build
+import java.io.File 
+import android.net.Uri
 
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Process
 
 class MainActivity: FlutterActivity(){
+
+
+    private fun createDownloadUri(fileName: String, mimeType: String): Uri? {
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            put(MediaStore.Downloads.DATE_ADDED, System.currentTimeMillis() / 1000)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+        }
+        return applicationContext.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+    }
+
+    private fun getDownloadFilePath(uri: Uri, defaultFileName: String): String {
+        val projection = arrayOf(
+            MediaStore.Downloads.DISPLAY_NAME,
+            MediaStore.Downloads.RELATIVE_PATH
+        )
+        val cursor = applicationContext.contentResolver.query(uri, projection, null, null, null)
+        if (cursor != null) {
+            cursor.use { c ->
+                if (c.moveToFirst()) {
+                    val displayName = c.getString(c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME))
+                    val relativePath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        c.getString(c.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH))
+                            ?: Environment.DIRECTORY_DOWNLOADS
+                    } else {
+                        Environment.DIRECTORY_DOWNLOADS
+                    }
+                    // 清理路径格式：去掉末尾的斜杠，并处理连续斜杠问题
+                    val cleanPath = relativePath.removeSuffix("/").replace("//", "/")
+                    return "$cleanPath/$displayName"
+                }
+            }
+        }
+        return "${Environment.DIRECTORY_DOWNLOADS}/$defaultFileName"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,9 +98,60 @@ class MainActivity: FlutterActivity(){
                     }
                     
                 }
+
+                "copyToDownloads" -> {
+                    val sourcePath = call.argument<String>("sourcePath")
+                    val fileName = call.argument<String>("fileName")
+
+                    if (sourcePath == null || fileName == null) {
+                        result.error("INVALID_ARGUMENTS", "sourcePath 或 fileName 为空", null)
+                    } else {
+                        val uri = createDownloadUri(fileName, "application/octet-stream")
+                        if (uri == null) {
+                            result.error("UNAVAILABLE", "无法创建导出文件", null)
+                        } else {
+                            try {
+                                applicationContext.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                    File(sourcePath).inputStream().use { inputStream ->
+                                        inputStream.copyTo(outputStream)
+                                    }
+                                }
+                                result.success(getDownloadFilePath(uri, fileName))
+                            } catch (e: Exception) {
+                                result.error("IO_ERROR", "文件复制失败: ${e.message}", null)
+                            }
+                        }
+                    }
+                }
+
+                "exportJsonToDownloads" -> {
+                    val fileContent = call.argument<String>("fileContent")
+                    val fileName = call.argument<String>("fileName")
+
+                    if (fileContent == null || fileName == null) {
+                        result.error("INVALID_ARGUMENTS", "fileContent 或 fileName 为空", null)
+                    } else {
+                        val uri = createDownloadUri(fileName, "application/json")
+                        if (uri == null) {
+                            result.error("UNAVAILABLE", "无法创建导出文件", null)
+                        } else {
+                            try {
+                                applicationContext.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                    outputStream.write(fileContent.toByteArray())
+                                }
+                                result.success(getDownloadFilePath(uri, fileName))
+                            } catch (e: Exception) {
+                                result.error("IO_ERROR", "文件写入失败: ${e.message}", null)
+                            }
+                        }
+                    }
+                }
+
                 else -> result.notImplemented()
+
             }
         }
+
         if (MyNotificationListenerService.isNotificationListenerEnabled(this)) {
             //NotificationListenerService被系统退出后再次启动不会bindService
             //检测服务是否被Bind，若否则重启服务，触发reBind

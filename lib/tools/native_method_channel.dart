@@ -44,4 +44,24 @@ class NativeMethodChannel {
   Future delBill(int index) async {
     return await _channel.invokeMethod('delBill', {'index': index});
   }
+
+  Future exportJsonToDownloads(String jsonString, String fileName) async {
+    return await _channel.invokeMethod(
+      'exportJsonToDownloads',
+      {
+        'fileContent': jsonString,
+        'fileName': fileName,
+      },
+    );
+  }
+
+  Future copyToDownloads(String sourcePath, String fileName) async {
+    return await _channel.invokeMethod(
+      'copyToDownloads',
+      {
+        'sourcePath': sourcePath,
+        'fileName': fileName,
+      },
+    );
+  }
 }
