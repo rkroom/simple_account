@@ -21,6 +21,20 @@ jobs:
         with:
           channel: stable
           cache: true
+
+      - name: Generate debug keystore
+        run: |
+          mkdir $env:USERPROFILE\.android
+          keytool -genkeypair `
+            -alias androiddebugkey `
+            -keypass android `
+            -keystore $env:USERPROFILE\.android\debug.keystore `
+            -storepass android `
+            -dname "CN=Android Debug,O=Android" `
+            -validity 10000 `
+            -keyalg RSA `
+            -keysize 3072
+            
       - run: flutter --version
       - run: flutter pub get
       - run: flutter build apk --release --split-per-abi

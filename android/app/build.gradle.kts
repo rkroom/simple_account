@@ -1,9 +1,8 @@
 plugins {
-    id "com.android.application"
-    id "kotlin-android"
+    id("com.android.application")
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
-    id "dev.flutter.flutter-gradle-plugin"
-    id "org.jetbrains.kotlin.plugin.serialization"
+    id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
@@ -13,13 +12,13 @@ android {
     //ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        coreLibraryDesugaringEnabled true
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        isCoreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_1_8
+        jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
     defaultConfig {
@@ -34,7 +33,7 @@ android {
     }
 
     signingConfigs {
-        release {
+        create("release") {
             keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
             keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
             storePassword = System.getenv("STORE_PASSWORD") ?: "android"
@@ -46,17 +45,19 @@ android {
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.release
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
+
 dependencies {
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.3'
-    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1'
-    implementation 'com.google.errorprone:error_prone_annotations:2.36.0' // required by flutter_secure_storage
-    implementation 'com.github.spotbugs:spotbugs-annotations:4.8.6' // required by flutter_secure_storage
-//    implementation "androidx.work:work-runtime-ktx:2.9.1"
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
+    implementation("com.google.errorprone:error_prone_annotations:2.37.0") // required by flutter_secure_storage
+    implementation("com.github.spotbugs:spotbugs-annotations:4.9.3") // required by flutter_secure_storage
+//    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }
+
 flutter {
     source = "../.."
 }
