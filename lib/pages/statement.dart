@@ -17,48 +17,36 @@ class StatementWidget extends StatefulWidget {
 class StatementWidgetState extends State<StatementWidget> {
   static const _pageSize = 13;
 
-  Map<String, dynamic>? selectedData; // Store the selected item
+  int? selectedId;
 
-  final PagingController<int, Map<String, dynamic>> _pagingController =
-      PagingController(firstPageKey: 0);
-
-  //final DatabaseHelper _databaseHelper = DatabaseHelper();
+  late final _pagingController = PagingController<int, Map<String, dynamic>>(
+    getNextPageKey: (state) {
+      if (!state.hasNextPage) return null;
+      final keys = state.keys ?? <int>[];
+      final pages = state.pages;
+      if (pages != null && pages.last.length < _pageSize) return null;
+      final nextKey = keys.isEmpty ? 0 : (keys.last + 1);
+      return nextKey;
+    },
+    fetchPage: (pageKey) => _fetchPage(pageKey),
+  );
 
   @override
   void initState() {
     super.initState();
-    _pagingController.addPageRequestListener((pageKey) {
-      _fetchPage(pageKey);
-    });
     bus.on("add_bill_success", (arg) {
       _pagingController.refresh();
     });
   }
 
-  Future<void> _fetchPage(int pageKey) async {
-    try {
-      final offset = pageKey * _pageSize;
-      final billDetails = await DB().getBillDetails(_pageSize, offset);
-      //final billDetails = await _databaseHelper.fetchData(_pageSize, offset);
-      final isLastPage = billDetails.isEmpty;
-      if (isLastPage) {
-        _pagingController.appendLastPage(billDetails);
-      } else {
-        final nextPageKey = pageKey + 1;
-        _pagingController.appendPage(billDetails, nextPageKey);
-      }
-    } catch (error) {
-      _pagingController.error = error;
-    }
+  Future<List<Map<String, dynamic>>> _fetchPage(int pageKey) async {
+    final offset = pageKey * _pageSize;
+    return DB().getBillDetails(_pageSize, offset);
   }
 
   void onItemPressed(Map<String, dynamic> item) {
     setState(() {
-      if (selectedData == item) {
-        selectedData = null;
-      } else {
-        selectedData = item;
-      }
+      selectedId = selectedId == item['id'] ? null : item['id'];
     });
   }
 
@@ -71,23 +59,20 @@ class StatementWidgetState extends State<StatementWidget> {
           content: Text('是否确认删除金额为: ${item['detailed']} 的记录?'),
           actions: <Widget>[
             TextButton(
-              onPressed: () {
-                Navigator.of(context).pop(); // Close the dialog
-              },
+              onPressed: () => Navigator.of(context).pop(), // 取消
               child: const Text('取消'),
             ),
             TextButton(
               onPressed: () {
                 try {
                   DB().deleteBill(item['id']);
-                  _pagingController.itemList?.remove(item);
-                  //_pagingController.refresh();
-                  _pagingController.itemList =
-                      List.from(_pagingController.itemList!);
+                  _pagingController.value = _pagingController.value.filterItems(
+                    (current) => current['id'] != item['id'],
+                  );
                 } catch (error) {
                   showNoticeSnackBar(context, "$error");
                 }
-                Navigator.of(context).pop(); // Close the dialog
+                Navigator.of(context).pop();
               },
               child: const Text('确认'),
             ),
@@ -100,60 +85,77 @@ class StatementWidgetState extends State<StatementWidget> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: PagedListView<int, Map<String, dynamic>>(
-        pagingController: _pagingController,
-        builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
-          itemBuilder: (context, item, index) {
-            return Container(
-              decoration: const BoxDecoration(
-                  border: Border(
-                      bottom: BorderSide(width: 1, color: Color(0xffe5e5e5)))),
-              child: Column(
-                children: [
-                  ListTile(
-                    title: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          Expanded(flex: 3, child: Text(item['account'])),
-                          Expanded(
+      body: PagingListener<int, Map<String, dynamic>>(
+        controller: _pagingController,
+        builder: (context, state, fetchNextPage) {
+          return PagedListView<int, Map<String, dynamic>>(
+            state: state,
+            fetchNextPage: fetchNextPage,
+            builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
+              itemBuilder: (context, item, index) {
+                return Container(
+                  decoration: const BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(width: 1, color: Color(0xffe5e5e5)),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      ListTile(
+                        title: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            Expanded(flex: 3, child: Text(item['account'])),
+                            Expanded(
                               flex: 3,
                               child: Text(
-                                  "${item['flow'] == '支出' ? '-' : ''}${item['detailed'].toString()}")),
-                          //Expanded(flex: 2, child: Text(item['flow'])),
-                          if (item['aim_account'] != null)
-                            Expanded(flex: 3, child: Text(item['aim_account'])),
-                          if (item['category'] != null)
-                            Expanded(flex: 3, child: Text(item['category']))
-                        ]),
-                    subtitle: Row(children: [
-                      Text(
-                          "${item['flow'] == '转账' ? item['flow'] + '\n' : ''}${item['date'].substring(5)}"),
-                      const Text(" "),
-                      if (item['comment'] != null && item['comment'] != '')
-                        Text(
-                            '${item['flow'] == '转账' ? '\n' : ''}备注: ${item['comment']}'),
-                    ]),
-                    onTap: () {
-                      onItemPressed(item);
-                    },
+                                "${item['flow'] == '支出' ? '-' : ''}${item['detailed'].toString()}",
+                              ),
+                            ),
+                            //Expanded(flex: 2, child: Text(item['flow'])),
+                            if (item['aim_account'] != null)
+                              Expanded(
+                                flex: 3,
+                                child: Text(item['aim_account']),
+                              ),
+                            if (item['category'] != null)
+                              Expanded(flex: 3, child: Text(item['category'])),
+                          ],
+                        ),
+                        subtitle: Row(
+                          children: [
+                            Text(
+                              "${item['flow'] == '转账' ? item['flow'] + '\n' : ''}${item['date'].substring(5)}",
+                            ),
+                            const Text(" "),
+                            if (item['comment'] != null &&
+                                item['comment'] != '')
+                              Text(
+                                '${item['flow'] == '转账' ? '\n' : ''}备注: ${item['comment']}',
+                              ),
+                          ],
+                        ),
+                        onTap: () {
+                          onItemPressed(item);
+                        },
+                      ),
+                      if (selectedId == item['id'])
+                        ElevatedButton(
+                          onPressed: () {
+                            _showConfirmationDialog(item);
+                          },
+                          child: const Text('删除'),
+                        ),
+                    ],
                   ),
-                  if (selectedData == item)
-                    ElevatedButton(
-                      onPressed: () {
-                        _showConfirmationDialog(item);
-                      },
-                      child: const Text('删除'),
-                    ),
-                ],
-              ),
-            );
-          },
-          noItemsFoundIndicatorBuilder: (context) {
-            return const Center(
-              child: Text("尚无记录，添加第一笔记录吧！"),
-            );
-          },
-        ),
+                );
+              },
+              noItemsFoundIndicatorBuilder: (context) {
+                return const Center(child: Text("尚无记录，添加第一笔记录吧！"));
+              },
+            ),
+          );
+        },
       ),
     );
   }
@@ -165,35 +167,3 @@ class StatementWidgetState extends State<StatementWidget> {
     bus.off("add_bill_success");
   }
 }
-
-/*
-class DatabaseHelper {
-  Future<List<Map<String, dynamic>>> fetchData(int limit, int offset) async {
-    return await DB().getBillDetails(limit, offset);
-  }
-}*/
-
-
-
-
-
-
-/*
-class BillDetails {
-final String dateTime;
-final String category;
-final String flow;
-final double detailed;
-final String account;
-final String aimAccount;
-final String comment;
-const BillDetails ({
-  required this.dateTime, 
-  required this.category, 
-  required this.flow, 
-  required this.detailed, 
-  required this.account, 
-  required this.aimAccount, 
-  required this.comment, 
-});
-}*/

@@ -163,7 +163,7 @@ JOIN TopValues t on a.id = t.account_info_id""",
   }
 
   //账单列表
-  Future getBillDetails(pageSize, pageNum) async {
+  Future<List<Map<String, dynamic>>> getBillDetails(pageSize, pageNum) async {
     var db = await database;
     return db.rawQuery(
         """select i.name as account,b.account_info_id as account_id, case when b.flow = 'consume' then '支出' when b.flow = 'income' then '收入' 
