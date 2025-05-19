@@ -73,7 +73,7 @@ class AddWidgetState extends State<AddWidget>
     var results = await Future.wait([
       getCategory("consume"), // 获取消费分类
       getCategory("income"), // 获取收入分类
-      getAccount() // 获取账户信息
+      getAccount(), // 获取账户信息
     ]);
 
     // 在所有异步任务完成后，统一更新状态
@@ -91,6 +91,31 @@ class AddWidgetState extends State<AddWidget>
       accountIndex = results[2][1];
       // accountType = results[2][2];
     });
+  }
+
+  Future<void> _checkPermissions() async {
+    try {
+      final results = await Future.wait([
+        NativeMethodChannel.instance.checkAccessibilityPermission(),
+        NativeMethodChannel.instance.checkNotificationListenerPermission(),
+      ]);
+
+      final accessibilityPermission = results[0];
+      final notificationListenerPermission = results[1];
+
+      if (mounted) {
+        setState(() {
+          _hasPermission =
+              accessibilityPermission || notificationListenerPermission;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _hasPermission = false;
+        });
+      }
+    }
   }
 
   @override
@@ -121,13 +146,7 @@ class AddWidgetState extends State<AddWidget>
         });
       });
     });
-    NativeMethodChannel.instance
-        .checkNotificationListenerPermission()
-        .then((hasPermission) {
-      setState(() {
-        _hasPermission = hasPermission;
-      });
-    });
+    _checkPermissions();
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -186,15 +205,14 @@ class AddWidgetState extends State<AddWidget>
     );
   }
 
-// 获取标签
+  // 获取标签
   Widget getTabBar() {
     // 返回TabBar
     return TabBar(
-      tabs: tabs.map((t) {
-        return Tab(
-          child: Text(t),
-        );
-      }).toList(),
+      tabs:
+          tabs.map((t) {
+            return Tab(child: Text(t));
+          }).toList(),
     );
   }
 
@@ -208,21 +226,24 @@ class AddWidgetState extends State<AddWidget>
   categoryQuickSelect(item) {
     setState(() {
       showConsumeCategory = item["category"];
-      selectedConsumeCategory =
-          findElementIndexes(consumeCategory, item["category"]);
+      selectedConsumeCategory = findElementIndexes(
+        consumeCategory,
+        item["category"],
+      );
       consumeCategoryId = item["id"];
     });
   }
 
-//支出，收入，转账分别的页面。
+  //支出，收入，转账分别的页面。
   //支出
   Widget consume() {
     return Column(
       children: [
         Expanded(
           child: QuickSelect(
-              accountQuickSelect: accountQuickSelect,
-              categoryQuickSelect: categoryQuickSelect),
+            accountQuickSelect: accountQuickSelect,
+            categoryQuickSelect: categoryQuickSelect,
+          ),
         ),
         Stack(
           children: [
@@ -258,9 +279,9 @@ class AddWidgetState extends State<AddWidget>
                     },
                   ),
                 ),
-            ]
+            ],
           ],
-        )
+        ),
       ],
     );
   }
@@ -268,151 +289,163 @@ class AddWidgetState extends State<AddWidget>
   //收入
   Widget income() {
     return Stack(
-        // todo 将其抽离为组件
-        alignment: Alignment.bottomCenter,
-        children: [
-          Positioned(
-            bottom: 20,
-            child: Transactions(
-              flow: Transaction.income,
-              accountNames: accountName,
-              accountIndexs: accountIndex,
-              categoryIndex: incomeCategoryIndex,
-              categories: incomeCategory,
-              time: whenTime,
-              accountText: showIncomeAccount,
-              accountId: incomeAccountId,
-              categoryText: showIncomeCategory,
-              categoryId: incomeCategoryId,
-              onTimeChanged: (time) {
-                timeSign = DateTime.now();
-              },
-            ),
+      alignment: Alignment.bottomCenter,
+      children: [
+        Positioned(
+          bottom: 20,
+          child: Transactions(
+            flow: Transaction.income,
+            accountNames: accountName,
+            accountIndexs: accountIndex,
+            categoryIndex: incomeCategoryIndex,
+            categories: incomeCategory,
+            time: whenTime,
+            accountText: showIncomeAccount,
+            accountId: incomeAccountId,
+            categoryText: showIncomeCategory,
+            categoryId: incomeCategoryId,
+            onTimeChanged: (time) {
+              timeSign = DateTime.now();
+            },
           ),
-        ]);
+        ),
+      ],
+    );
   }
 
   // 转账
   Widget transfer() {
     // todo 将其抽离为组件
-    return Stack(alignment: Alignment.bottomCenter, children: [
-      Positioned(
-        bottom: 20,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: <Widget>[
-                const Text("金额："),
-                SizedBox(
-                  width: 100,
-                  child: TextField(
-                    // 只允许输入数字和小数
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d+\.?\d{0,2}'),
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      children: [
+        Positioned(
+          bottom: 20,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  const Text("金额："),
+                  SizedBox(
+                    width: 100,
+                    child: TextField(
+                      // 只允许输入数字和小数
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                          RegExp(r'^\d+\.?\d{0,2}'),
+                        ),
+                      ],
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
                       ),
-                    ],
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    controller: _transferAmountController,
+                      controller: _transferAmountController,
+                    ),
                   ),
-                ),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.all(5),
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  // 转出账户类别
-                  Picker(
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.all(5),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    // 转出账户类别
+                    Picker(
                       confirmText: "确认",
                       cancelText: "取消",
-                      adapter:
-                          PickerDataAdapter<String>(pickerData: accountName),
+                      adapter: PickerDataAdapter<String>(
+                        pickerData: accountName,
+                      ),
                       hideHeader: false,
                       onConfirm: (Picker picker, List value) {
                         setState(() {
                           showTransferAccount = picker.adapter.text;
-                          transferAccountId = accountIndex[
-                              picker.adapter.getSelectedValues()[0]];
+                          transferAccountId =
+                              accountIndex[picker.adapter
+                                  .getSelectedValues()[0]];
                         });
-                      }).showModal(context);
-                },
-                child: Text(
-                  "转出账户：$showTransferAccount",
-                  textScaler: customTextScaler,
+                      },
+                    ).showModal(context);
+                  },
+                  child: Text(
+                    "转出账户：$showTransferAccount",
+                    textScaler: customTextScaler,
+                  ),
                 ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(5),
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  // 转入账户类别
-                  Picker(
+              Padding(
+                padding: const EdgeInsets.all(5),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    // 转入账户类别
+                    Picker(
                       confirmText: "确认",
                       cancelText: "取消",
-                      adapter:
-                          PickerDataAdapter<String>(pickerData: accountName),
+                      adapter: PickerDataAdapter<String>(
+                        pickerData: accountName,
+                      ),
                       hideHeader: false,
                       onConfirm: (Picker picker, List value) {
                         setState(() {
                           showTransferAimAccount = picker.adapter.text;
-                          transferAimAccountId = accountIndex[
-                              picker.adapter.getSelectedValues()[0]];
+                          transferAimAccountId =
+                              accountIndex[picker.adapter
+                                  .getSelectedValues()[0]];
                         });
-                      }).showModal(context);
-                },
-                child: Text(
-                  "转入账户：$showTransferAimAccount",
-                  textScaler: customTextScaler,
+                      },
+                    ).showModal(context);
+                  },
+                  child: Text(
+                    "转入账户：$showTransferAimAccount",
+                    textScaler: customTextScaler,
+                  ),
                 ),
               ),
-            ),
-            // 手势检测器
-            Padding(
-              padding: const EdgeInsets.all(5),
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                // 当单击时
-                onTap: () {
-                  // 日期时间选择器
-                  DatePicker.showDateTimePicker(context, showTitleActions: true,
+              // 手势检测器
+              Padding(
+                padding: const EdgeInsets.all(5),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  // 当单击时
+                  onTap: () {
+                    // 日期时间选择器
+                    DatePicker.showDateTimePicker(
+                      context,
+                      showTitleActions: true,
                       onConfirm: (date) {
-                    setState(() {
-                      whenTime = date;
-                    });
-                    timeSign = DateTime.now();
-                  },
+                        setState(() {
+                          whenTime = date;
+                        });
+                        timeSign = DateTime.now();
+                      },
                       // 当前时间
                       currentTime: whenTime,
                       // 语言
-                      locale: LocaleType.zh);
-                },
-                child: Text(
-                  "时间：${whenTime.year.toString()}-${whenTime.month.toString().padLeft(2, '0')}-${whenTime.day.toString().padLeft(2, '0')} ${whenTime.hour.toString().padLeft(2, '0')}:${whenTime.minute.toString().padLeft(2, '0')}",
-                  textScaler: customTextScaler,
-                ),
-              ),
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: <Widget>[
-                const Text("备注："),
-                SizedBox(
-                  width: 150,
-                  child: TextField(
-                    // 通过controller可以调用用户输入的数据
-                    controller: _transferCommentController,
+                      locale: LocaleType.zh,
+                    );
+                  },
+                  child: Text(
+                    "时间：${whenTime.year.toString()}-${whenTime.month.toString().padLeft(2, '0')}-${whenTime.day.toString().padLeft(2, '0')} ${whenTime.hour.toString().padLeft(2, '0')}:${whenTime.minute.toString().padLeft(2, '0')}",
+                    textScaler: customTextScaler,
                   ),
                 ),
-              ],
-            ),
-            ElevatedButton(
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  const Text("备注："),
+                  SizedBox(
+                    width: 150,
+                    child: TextField(
+                      // 通过controller可以调用用户输入的数据
+                      controller: _transferCommentController,
+                    ),
+                  ),
+                ],
+              ),
+              ElevatedButton(
                 child: const Text("添加"),
                 // 点击按钮事件
                 onPressed: () async {
@@ -422,11 +455,12 @@ class AddWidgetState extends State<AddWidget>
                   }
                   try {
                     DB().addTransfer(
-                        _transferAmountController.text,
-                        transferAccountId,
-                        transferAimAccountId,
-                        _transferCommentController.text,
-                        whenTime.toString());
+                      _transferAmountController.text,
+                      transferAccountId,
+                      transferAimAccountId,
+                      _transferCommentController.text,
+                      whenTime.toString(),
+                    );
                     //FocusScope.of(context).unfocus();
                     _transferAmountController.clear();
                     _transferCommentController.clear();
@@ -434,14 +468,16 @@ class AddWidgetState extends State<AddWidget>
                     //print(error);
                     showNoticeSnackBar(context, "添加失败，请检查输入");
                   }
-                }),
-          ],
+                },
+              ),
+            ],
+          ),
         ),
-      ),
-    ]);
+      ],
+    );
   }
 
-// 将支出，收入，转账页面添加到一个list
+  // 将支出，收入，转账页面添加到一个list
   listPages() {
     List<Widget> tabPages = [];
     return tabPages
@@ -450,10 +486,8 @@ class AddWidgetState extends State<AddWidget>
       ..add(transfer());
   }
 
-// 返回页面
+  // 返回页面
   Widget getTabBarPages() {
-    return TabBarView(
-      children: listPages(),
-    );
+    return TabBarView(children: listPages());
   }
 }

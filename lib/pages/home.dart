@@ -8,14 +8,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:workmanager/workmanager.dart';
 
 import '../tools/config.dart';
 import '../tools/config_service.dart';
 import '../tools/native_method_channel.dart';
 import '../tools/notification_service.dart';
 import '../tools/tools.dart';
-import '../tools/workmanager_tool.dart';
 import 'account.dart';
 import 'add.dart';
 import 'statement.dart';
@@ -41,7 +39,6 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
   // 标题
   List titles = ["添加", "账单", "账户"];
 
-  bool _isReturningFromSettings = false;
   // 定时器，应用进入后台后一定时间内未被再次打开则彻底退出应用。
   Timer? _exitTimer;
 
@@ -51,17 +48,12 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         date1.day == date2.day;
   }
 
-  Future<void> initializeAndScheduleTask() async {
-    // 初始化Workmanager
-    await Workmanager().initialize(
-      callbackDispatcher,
-      isInDebugMode: kDebugMode, // 调试模式下设置为 true
-    );
-    scheduleDailyTask();
-    ConfigService().setScheduledTaskTime(DateTime.now());
-  }
-
   void checkAndSetWorkmanagerTasks() async {
+    bool notificationTaskStatus =
+        await ConfigService().getNotificationTaskStatus();
+    if (!notificationTaskStatus) {
+      return;
+    }
     bool succeeded = await ConfigService().getNotificationRegistered();
     if (!succeeded) {
       await NotificationService().initNotification();
@@ -110,41 +102,33 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     pages = [
-      AddWidget(
-        key: _childKey,
-      ),
+      AddWidget(key: _childKey),
       const StatementWidget(),
-      const AccountWidget()
+      const AccountWidget(),
     ];
     checkAndSetWorkmanagerTasks();
-    if (kDebugMode) {
-      NativeMethodChannel.instance
-          .setMethodCallHandler((MethodCall call) async {
-        if (call.method == 'flutterPrint') {
-          debugPrint(call.arguments);
-        }
-      });
-    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       bool hasShownInstructions = await ConfigService().getAppInstructions();
       if (!hasShownInstructions && mounted) {
         showDialog(
           context: context,
-          builder: (BuildContext dialogContext) => AlertDialog(
-            title: const Text('说明'),
-            content:
-                const Text('欢迎使用！\n\n1. 自动记录账单需要通知读取权限。\n2. 自动记录账单需要开启自启动。'),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.of(dialogContext).pop();
-                  ConfigService().setAppInstructions(true);
-                },
-                child: const Text('好的'),
+          builder:
+              (BuildContext dialogContext) => AlertDialog(
+                title: const Text('说明'),
+                content: const Text(
+                  '欢迎使用！\n\n1. 自动记录账单相应权限。\n2. 自动记录账单需要开启自启动。\n3. 账单推送需要开启通知权限。',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(dialogContext).pop();
+                      ConfigService().setAppInstructions(true);
+                    },
+                    child: const Text('好的'),
+                  ),
+                ],
               ),
-            ],
-          ),
         );
       }
     });
@@ -155,26 +139,27 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
     super.didChangeAppLifecycleState(state);
 
     // 当应用恢复到前台时
-    if (state == AppLifecycleState.resumed && _isReturningFromSettings) {
+    if (state == AppLifecycleState.resumed && Global.isReturningFromSettings) {
       // 检查权限状态
-      final bool hasPermission = await NativeMethodChannel.instance
-          .checkNotificationListenerPermission();
-      if (hasPermission) {
+      final bool hasAccessibilityPermission =
+          await NativeMethodChannel.instance.checkAccessibilityPermission();
+      final bool hasNotificationPermission =
+          await NativeMethodChannel.instance
+              .checkNotificationListenerPermission();
+      if (hasAccessibilityPermission || hasNotificationPermission) {
         //刷新组件以显示按钮
         setState(() {
           _childKey = UniqueKey();
           //重置pages，否则仅更新_childKey不会触发刷新
           pages = [
-            AddWidget(
-              key: _childKey,
-            ),
+            AddWidget(key: _childKey),
             const StatementWidget(),
-            const AccountWidget()
+            const AccountWidget(),
           ];
         });
       }
       // 重置标志位，确保只检查一次
-      _isReturningFromSettings = false;
+      Global.isReturningFromSettings = false;
     }
 
     if (state == AppLifecycleState.resumed) {
@@ -211,35 +196,31 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         await NativeMethodChannel.instance.minimizeApp();
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(titles[_currentIndex]),
-        ),
+        appBar: AppBar(title: Text(titles[_currentIndex])),
         endDrawer: Drawer(
           child: ListView(
             padding: EdgeInsets.zero,
             children: [
               const DrawerHeader(
-                decoration: BoxDecoration(
-                  color: Colors.blue,
-                ),
+                decoration: BoxDecoration(color: Colors.blue),
                 child: Text('管理'),
               ),
               ListTile(
-                title: const Text('添加设置'),
+                title: const Text('账本设置'),
                 onTap: () {
                   Navigator.of(context).pop();
-                  Navigator.of(context)
-                      .pushNamed('/manage')
-                      .then((value) => {});
+                  Navigator.of(
+                    context,
+                  ).pushNamed('/manage').then((value) => {});
                 },
               ),
               ListTile(
                 title: const Text('账本管理'),
                 onTap: () {
                   Navigator.pop(context);
-                  Navigator.of(context)
-                      .pushNamed('/accountFile')
-                      .then((value) => {});
+                  Navigator.of(
+                    context,
+                  ).pushNamed('/accountFile').then((value) => {});
                 },
               ),
               ListTile(
@@ -287,9 +268,9 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                 title: const Text('记录图表'),
                 onTap: () {
                   Navigator.pop(context);
-                  Navigator.of(context)
-                      .pushNamed('/statistic')
-                      .then((value) => {});
+                  Navigator.of(
+                    context,
+                  ).pushNamed('/statistic').then((value) => {});
                 },
               ),
               ListTile(
@@ -302,7 +283,8 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
 
                   try {
                     String jsonString = jsonEncode(
-                        await NativeMethodChannel.instance.getBills());
+                      await NativeMethodChannel.instance.getBills(),
+                    );
                     String fileName = "billRecord.json";
                     // 调用平台方法使用 MediaStore API 将字符串写入到 Downloads 文件夹中的文件
                     String result = await NativeMethodChannel.instance
@@ -341,15 +323,19 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                   title: const Text('账单记录'),
                   onTap: () async {
                     try {
-                      final bool hasPermission = await NativeMethodChannel
-                          .instance
-                          .checkNotificationListenerPermission();
-                      if (hasPermission) {
+                      final bool hasAccessibilityPermission =
+                          await NativeMethodChannel.instance
+                              .checkAccessibilityPermission();
+                      final bool hasNotificationPermission =
+                          await NativeMethodChannel.instance
+                              .checkNotificationListenerPermission();
+                      if (hasAccessibilityPermission ||
+                          hasNotificationPermission) {
                         if (context.mounted) {
                           Navigator.of(context).pop();
-                          Navigator.of(context)
-                              .pushNamed('/billListener')
-                              .then((value) => {});
+                          Navigator.of(
+                            context,
+                          ).pushNamed('/billListener').then((value) => {});
                         }
                       } else {
                         if (context.mounted) {
@@ -357,8 +343,7 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                             context: context,
                             builder: (BuildContext context) {
                               return AlertDialog(
-                                content: const Text(
-                                    '该功能需要从应用通知中读取账单信息，故此需要获取通知访问权限。'),
+                                content: const Text('该功能需要权限读取账单信息。'),
                                 actions: <Widget>[
                                   TextButton(
                                     onPressed: () {
@@ -371,12 +356,14 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                                       Navigator.of(context).pop(); // 关闭对话框
                                       Navigator.of(context).pop(); // 关闭drawer
                                       try {
-                                        await NativeMethodChannel.instance
-                                            .requestNotificationListenerPermission();
-                                        _isReturningFromSettings = true;
+                                        Navigator.of(context)
+                                            .pushNamed('/configuration')
+                                            .then((value) => {});
+                                        Global.isReturningFromSettings = true;
                                       } on PlatformException catch (e) {
                                         debugPrint(
-                                            "Failed to request permission: '${e.message}'.");
+                                          "Failed to request permission: '${e.message}'.",
+                                        );
                                       }
                                     },
                                     child: const Text('确定'),
@@ -392,31 +379,25 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                     }
                   },
                 ),
-              ]
+                ListTile(
+                  title: const Text('应用设置'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.of(
+                      context,
+                    ).pushNamed('/configuration').then((value) => {});
+                  },
+                ),
+              ],
             ],
           ),
         ),
         body: pages[_currentIndex],
         bottomNavigationBar: BottomNavigationBar(
           items: const [
-            BottomNavigationBarItem(
-              icon: Icon(
-                Icons.plus_one,
-              ),
-              label: '记账',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(
-                Icons.receipt,
-              ),
-              label: '账单',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(
-                Icons.local_atm,
-              ),
-              label: '账户',
-            ),
+            BottomNavigationBarItem(icon: Icon(Icons.plus_one), label: '记账'),
+            BottomNavigationBarItem(icon: Icon(Icons.receipt), label: '账单'),
+            BottomNavigationBarItem(icon: Icon(Icons.local_atm), label: '账户'),
           ],
           currentIndex: _currentIndex,
           onTap: (int i) {

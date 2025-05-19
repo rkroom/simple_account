@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:simple_account/tools/entity.dart';
 
 import 'native_method_channel.dart';
 
@@ -15,7 +16,8 @@ class BillListenerService {
     return _instance;
   }
 
-  static RegExp regExp = RegExp(r"(\d+\.\d{2})");
+  static final RegExp regExp = RegExp(r"(\d+\.\d{2})");
+  static final RegExp jdRegExp = RegExp(r'\d+(?:\.\d{1,2})?');
 
   List<String> billString = [];
   List billsList = [];
@@ -41,33 +43,34 @@ class BillListenerService {
     return billsList;
   }
 
-  Future<Map> handlerBillString(String notificationString) async {
+  Future<Bill> handlerBillString(String notificationString) async {
     Map<String, dynamic> notification = jsonDecode(notificationString);
     // 提取参数
     final String packageName = notification['packageName'];
-    final String content = notification['content'];
+    final String content = notification['content'] as String? ?? 'empty';
     final String title = notification['title'];
     final int postTime = notification['postTime'];
     return await convertToBill(packageName, content, title, postTime);
   }
 
-  Future<Map> convertToBill(
-      String packageName, String content, String title, int postTime) async {
+  Future<Bill> convertToBill(
+    String packageName,
+    String content,
+    String title,
+    int postTime,
+  ) async {
     // 匹配正则表达式
-    final RegExpMatch? match = regExp.firstMatch(content);
+    RegExpMatch? match;
+    if (packageName == "com.jingdong.app.mall") {
+      match = jdRegExp.firstMatch(content);
+    } else {
+      match = regExp.firstMatch(content);
+    }
 
-    int? account;
-    String consumeAccountText = "请选择";
-
-    final bill = {
-      "detailed": match?.group(0),
-      "account": account,
-      "time": DateTime.fromMillisecondsSinceEpoch(postTime),
-      "consumeAccountText": consumeAccountText,
-      "selectedCategory": null,
-      "consumeCategoryText": "请选择",
-      "categoryId": null,
-    };
+    final bill = Bill(
+      detailed: match?.group(0),
+      time: DateTime.fromMillisecondsSinceEpoch(postTime),
+    );
     return bill;
   }
 }

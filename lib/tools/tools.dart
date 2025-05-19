@@ -1,6 +1,11 @@
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:simple_account/tools/config.dart';
+import 'package:simple_account/tools/config_service.dart';
+import 'package:simple_account/tools/workmanager_tool.dart';
+import 'package:workmanager/workmanager.dart';
 
 import 'config_enum.dart';
 import 'db.dart';
@@ -28,7 +33,8 @@ List<String> currentlyMonthDays() {
   return [
     formatDateTime(firstDay),
     formatDateTime(
-        DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59))
+      DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59),
+    ),
   ];
 }
 
@@ -41,7 +47,8 @@ List<String> previousMonthDays() {
   return [
     formatDateTime(firstDay),
     formatDateTime(
-        DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59))
+      DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59),
+    ),
   ];
 }
 
@@ -50,8 +57,11 @@ String generateRandomString(int length) {
   const availableChars = 'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz';
   //const availableChars =
   //   'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz1234567890';
-  final randomString = List.generate(length,
-      (index) => availableChars[random.nextInt(availableChars.length)]).join();
+  final randomString =
+      List.generate(
+        length,
+        (index) => availableChars[random.nextInt(availableChars.length)],
+      ).join();
 
   return randomString;
 }
@@ -106,9 +116,10 @@ Future getCategory(String flow) async {
     categoryIndex[l["specific_category"]] = l["id"];
   }
   //分类List
-  List<Map<String, List<String>>> category = categoryMap.entries.map((entry) {
-    return {entry.key: entry.value};
-  }).toList();
+  List<Map<String, List<String>>> category =
+      categoryMap.entries.map((entry) {
+        return {entry.key: entry.value};
+      }).toList();
   // LIST，包含分类和分类的ID
   return [category, categoryIndex];
 }
@@ -151,7 +162,7 @@ Future getCategory(String flow) async {
 List<String> getDateRange(DateTime date) {
   return [
     formatDateTime(DateTime(date.year, date.month, date.day, 0, 0, 0)),
-    formatDateTime(DateTime(date.year, date.month, date.day, 23, 59, 59))
+    formatDateTime(DateTime(date.year, date.month, date.day, 23, 59, 59)),
   ];
 }
 
@@ -173,7 +184,11 @@ Future<Map> periodicStatistics() async {
   var results = await Future.wait([
     DB().timeStatistics(Transaction.consume.value, cmd[0], cmd[1]),
     DB().timeStatistics(Transaction.consume.value, today[0], today[1]),
-    DB().timeStatistics(Transaction.consume.value, previousDay[0], previousDay[1]),
+    DB().timeStatistics(
+      Transaction.consume.value,
+      previousDay[0],
+      previousDay[1],
+    ),
   ]);
 
   // 处理查询结果
@@ -186,4 +201,15 @@ Future<Map> periodicStatistics() async {
     "todayConsumption": todayConsumption,
     "previousDayConsumption": previousDayConsumption,
   };
+}
+
+Future<void> initializeAndScheduleTask() async {
+  // 初始化Workmanager
+  await Workmanager().initialize(
+    callbackDispatcher,
+    isInDebugMode: kDebugMode, // 调试模式下设置为 true
+  );
+  Global.isWorkmanagerInit = true;
+  scheduleDailyTask();
+  ConfigService().setScheduledTaskTime(DateTime.now());
 }

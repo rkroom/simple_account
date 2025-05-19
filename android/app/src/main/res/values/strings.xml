@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">simple account</string>
+    <string name="accessibility_service_description">record bills automatically</string>
 </resources>
 

@@ -37,8 +37,10 @@ class ConfigService {
       await storage.write(key: key, value: encodedValue);
     }
 
-    return await Hive.openBox('config',
-        encryptionCipher: HiveAesCipher(keyValue));
+    return await Hive.openBox(
+      'config',
+      encryptionCipher: HiveAesCipher(keyValue),
+    );
   }
 
   // 获取数据库路径
@@ -107,5 +109,32 @@ class ConfigService {
   Future<void> setAppInstructions(bool read) async {
     var box = await _box;
     return box.put("appInstructions", read);
+  }
+
+  Future<bool> getNotificationTaskStatus() async {
+    var box = await _box;
+    return box.get("notificationTaskStatus", defaultValue: false);
+  }
+
+  Future<void> setNotificationTaskStatus(bool status) async {
+    var box = await _box;
+    return box.put("notificationTaskStatus", status);
+  }
+
+  Future<Map<String, int>> getNotificationTaskTime() async {
+    var box = await _box;
+    // 直接 await，确保返回的是 Map<dynamic, dynamic>
+    final raw = await box.get(
+      "notificationTaskTime",
+      defaultValue: {"hour": 11, "minute": 0, "second": 0},
+    );
+    return Map<String, int>.from(
+      raw.cast<String, dynamic>(),
+    ).map((k, v) => MapEntry(k, v));
+  }
+
+  Future<void> setNotificationTaskTime(Map<String, int> time) async {
+    var box = await _box;
+    return box.put("notificationTaskTime", time);
   }
 }

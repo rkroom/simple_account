@@ -73,62 +73,66 @@ class BillListenerWidgetState extends State<BillListenerWidget>
   void _accountQuickSelect(dynamic item) {
     if (notifications.isEmpty) return;
     setState(() {
-      notifications[0]["consumeAccountText"] = item["name"];
-      notifications[0]["account"] = item["id"];
+      notifications[0].accountText = item["name"];
+      notifications[0].account = item["id"];
     });
   }
 
   void _categoryQuickSelect(dynamic item) {
     if (notifications.isEmpty) return;
     setState(() {
-      notifications[0]["selectedCategory"] =
-          findElementIndexes(categories[0], item['category']);
-      notifications[0]["consumeCategoryText"] = item['category'];
-      notifications[0]["categoryId"] = item["id"];
+      notifications[0].selectedCategory = findElementIndexes(
+        categories[0],
+        item['category'],
+      );
+      notifications[0].categoryText = item['category'];
+      notifications[0].categoryId = item["id"];
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: AppBar(
-          title: const Text('账单'),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.delete),
-              onPressed: _clearNotifications,
+      appBar: AppBar(
+        title: const Text('账单'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete),
+            onPressed: _clearNotifications,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: QuickSelect(
+              accountQuickSelect: _accountQuickSelect,
+              categoryQuickSelect: _categoryQuickSelect,
             ),
-          ],
-        ),
-        body: Column(
-          children: [
-            Expanded(
-              child: QuickSelect(
-                accountQuickSelect: _accountQuickSelect,
-                categoryQuickSelect: _categoryQuickSelect,
-              ),
-            ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: notifications.length,
-                itemBuilder: (context, index) {
-                  return Stack(children: [
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: notifications.length,
+              itemBuilder: (context, index) {
+                final billItem = notifications[index];
+                return Stack(
+                  children: [
                     Transactions(
                       //添加UniqueKey，否则删除时，只会删除最后一个元素
+                      //如果列表因不相关的更改而重建，或者项目被低效地重新排序/删除，Transactions 内任何未保存的更改都将丢失
                       key: UniqueKey(),
-                      amount: notifications[index]["detailed"],
+                      amount: billItem.detailed,
                       flow: Transaction.consume,
                       accountNames: accounts[0],
                       accountIndexs: accounts[1],
                       categories: categories[0],
                       categoryIndex: categories[1],
-                      time: notifications[index]["time"],
-                      accountId: notifications[index]["account"],
-                      accountText: notifications[index]["consumeAccountText"],
-                      selectedCategory: notifications[index]
-                          ["selectedCategory"],
-                      categoryText: notifications[index]["consumeCategoryText"],
-                      categoryId: notifications[index]["categoryId"],
+                      time: billItem.time,
+                      accountId: billItem.account,
+                      accountText: billItem.accountText,
+                      selectedCategory: billItem.selectedCategory,
+                      categoryText: billItem.categoryText,
+                      categoryId: billItem.categoryId,
                       addSuccess: (success) async {
                         if (success) {
                           await BillListenerService().delBill(index);
@@ -139,23 +143,19 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                         }
                       },
                       onAmountChanged: (value) {
-                        notifications[index]["detailed"] = value;
+                        billItem.detailed = value;
                       },
                       onCategoryConfirm: (category) {
-                        notifications[index]["selectedCategory"] =
-                            category["selected"];
-                        notifications[index]["consumeCategoryText"] =
-                            category["text"];
-                        notifications[index]["categoryId"] =
-                            category["categoryId"];
+                        billItem.selectedCategory = category["selected"];
+                        billItem.categoryText = category["text"];
+                        billItem.categoryId = category["categoryId"];
                       },
                       onAccountConfirm: (account) {
-                        notifications[index]["account"] = account["accountId"];
-                        notifications[index]["consumeAccountText"] =
-                            account["text"];
+                        billItem.account = account["accountId"];
+                        billItem.accountText = account["text"];
                       },
                       onTimeChanged: (time) {
-                        notifications[index]["time"] = time;
+                        billItem.time = time;
                       },
                     ),
                     Positioned(
@@ -171,11 +171,13 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                         },
                       ),
                     ),
-                  ]);
-                },
-              ),
+                  ],
+                );
+              },
             ),
-          ],
-        ));
+          ),
+        ],
+      ),
+    );
   }
 }

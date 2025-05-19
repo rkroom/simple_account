@@ -14,7 +14,10 @@ class Global {
   static Config? config;
   // 是否跳过Loading页
   static bool jumpLoad = false;
-  static Map notificationTime = {"hour": 11, "minute": 0, "second": 0};
+
+  static bool isReturningFromSettings = false;
+
+  static bool isWorkmanagerInit = false;
 
   static late String externalStorageDirectory;
 
