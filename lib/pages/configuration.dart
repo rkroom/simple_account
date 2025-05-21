@@ -53,7 +53,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   Future<void> _initializePermissionsAndTime() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
-
     try {
       final acc =
           await NativeMethodChannel.instance.checkAccessibilityPermission();
@@ -92,6 +91,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       if (mounted) {
         setState(() => _isLoading = false);
       }
+      showNoticeSnackBar(context, '加载配置失败: $e');
     }
   }
 
@@ -141,6 +141,51 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     return allowedAppNames.join(', ');
   }
 
+  Future<void> _handleResetSettings() async {
+    final confirmReset = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('确认操作'),
+          content: const Text('您确定要重置设置吗？此操作不可撤销。'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('取消'),
+              onPressed: () {
+                Navigator.of(context).pop(false);
+              },
+            ),
+            TextButton(
+              child: const Text('确定重置'),
+              onPressed: () {
+                Navigator.of(context).pop(true);
+              },
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmReset == true) {
+      setState(() => _isLoading = true);
+      try {
+        final count = await NativeMethodChannel.instance.clearAllConfig();
+        if (mounted) {
+          showNoticeSnackBar(
+            context,
+            count != null && count > 0 ? '已成功重置所有设置' : '没有设置被重置或操作失败',
+          );
+          await _initializePermissionsAndTime();
+        }
+      } catch (e) {
+        if (mounted) {
+          showNoticeSnackBar(context, '重置设置失败: $e');
+          setState(() => _isLoading = false);
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -178,100 +223,123 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
     return Scaffold(
       appBar: AppBar(title: const Text('配置')),
-      body: Column(
-        children: [
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            title: const Text('辅助功能权限'),
-            subtitle: Text(
-              abSubtitle,
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-            trailing: Checkbox(
-              value: _accessibilityChecked,
-              onChanged: (bool? newValue) async {
-                Global.isReturningFromSettings = true;
-                await NativeMethodChannel.instance.openAccessibilitySettings();
-              },
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-            ),
-            onTap: () async {
-              await Navigator.of(
-                context,
-              ).pushNamed('/billListenerConfig', arguments: {'config': 'acc'});
-              if (mounted) {
-                _initializePermissionsAndTime();
-              }
-            },
-          ),
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            title: const Text('通知监听权限'),
-            subtitle: Text(
-              nlSubtitle,
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-            trailing: Checkbox(
-              value: _notificationChecked,
-              onChanged: (bool? newValue) async {
-                Global.isReturningFromSettings = true;
-                await NativeMethodChannel.instance
-                    .requestNotificationListenerPermission();
-              },
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-            ),
-            onTap: () async {
-              await Navigator.of(
-                context,
-              ).pushNamed('/billListenerConfig', arguments: {'config': 'noti'});
-              if (mounted) {
-                _initializePermissionsAndTime();
-              }
-            },
-          ),
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            title: const Text('通知发布权限'),
-            trailing: Checkbox(
-              value: _postNotificationChecked,
-              onChanged: (bool? newValue) async {
-                await openAppSettings();
-              },
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-            ),
-            onTap: () async {
-              await openAppSettings();
-            },
-          ),
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            title: const Text('每日通知开关'),
-            trailing: Checkbox(
-              value: _notificationTaskChecked,
-              onChanged: (bool? checked) async {
-                if (checked != null) {
-                  await handleDailyNotificationToggle(checked);
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('辅助功能权限'),
+              subtitle: Text(
+                abSubtitle,
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              trailing: Checkbox(
+                value: _accessibilityChecked,
+                onChanged: (bool? newValue) async {
+                  Global.isReturningFromSettings = true;
+                  await NativeMethodChannel.instance
+                      .openAccessibilitySettings();
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                await Navigator.of(context).pushNamed(
+                  '/billListenerConfig',
+                  arguments: {'config': 'acc'},
+                );
+                if (mounted) {
+                  _initializePermissionsAndTime();
                 }
               },
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
             ),
-            onTap: () async {
-              await handleDailyNotificationToggle(!_notificationTaskChecked);
-            },
-          ),
-          ListTile(
-            title: const Text('通知触发时间'),
-            subtitle: Text(timeLabel),
-            trailing: IconButton(
-              icon: const Icon(Icons.access_time),
-              onPressed: _pickTaskTime,
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('通知监听权限'),
+              subtitle: Text(
+                nlSubtitle,
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              trailing: Checkbox(
+                value: _notificationChecked,
+                onChanged: (bool? newValue) async {
+                  Global.isReturningFromSettings = true;
+                  await NativeMethodChannel.instance
+                      .requestNotificationListenerPermission();
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                await Navigator.of(context).pushNamed(
+                  '/billListenerConfig',
+                  arguments: {'config': 'noti'},
+                );
+                if (mounted) {
+                  _initializePermissionsAndTime();
+                }
+              },
             ),
-          ),
-        ],
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('通知发布权限'),
+              trailing: Checkbox(
+                value: _postNotificationChecked,
+                onChanged: (bool? newValue) async {
+                  await openAppSettings();
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                await openAppSettings();
+              },
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('每日通知开关'),
+              trailing: Checkbox(
+                value: _notificationTaskChecked,
+                onChanged: (bool? checked) async {
+                  if (checked != null) {
+                    await handleDailyNotificationToggle(checked);
+                  }
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                await handleDailyNotificationToggle(!_notificationTaskChecked);
+              },
+            ),
+            ListTile(
+              title: const Text('通知触发时间'),
+              subtitle: Text(timeLabel),
+              trailing: IconButton(
+                icon: const Icon(Icons.access_time),
+                onPressed: _pickTaskTime,
+              ),
+            ),
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 20.0,
+              ),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  minimumSize: const Size.fromHeight(50),
+                ),
+                onPressed: _handleResetSettings,
+                child: const Text(
+                  '重置自动服务设置',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
