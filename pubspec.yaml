@@ -34,21 +34,21 @@ dependencies:
   #访问常用位置
   path_provider: ^2.1.5
   #文件选择器
-  file_picker: ^10.1.2
+  file_picker: ^10.1.9
   #sqlcipher
   sqflite_sqlcipher: ^3.1.0+1
   #路径拼接
-  path: ^1.9.0
+  path: ^1.9.1
   #时间选择器
   flutter_datetime_picker_plus: ^2.2.0
   #选择器,这个选择器也可以选择时间，可以根据自己的喜好选择
-  flutter_picker_plus: ^1.5.0
+  flutter_picker_plus: ^1.5.1
   #获取应用各类信息
   package_info_plus: ^8.3.0
   #无限滚动
   infinite_scroll_pagination: ^5.0.0
   #图标
-  fl_chart: ^0.71.0
+  fl_chart: ^1.0.0
   #重启应用
   #restart_app: ^1.2.1
   #获取权限
@@ -61,7 +61,7 @@ dependencies:
   #国际化与本地化
   intl: ^0.20.2
   #本地通知
-  flutter_local_notifications: ^19.1.0
+  flutter_local_notifications: ^19.2.1
   #定时任务
   #pub.dev上的workmanager在flutter 3.29的编译中存在问题
   #workmanager: ^0.5.2
