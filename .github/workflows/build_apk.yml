@@ -1,46 +1,119 @@
 name: Build Android App
 
-on: [push,workflow_dispatch]
+on: [push, workflow_dispatch]
 
 jobs:
   main:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Clone repository
         uses: actions/checkout@main
-        
+
       - name: Set up JDK
         uses: actions/setup-java@main
         with:
           distribution: 'zulu'
           java-version: '17'
           cache: 'gradle'
-          
+
       - name: Set up Flutter
         uses: subosito/flutter-action@main
         with:
           channel: stable
           cache: true
 
-      - name: Generate debug keystore
+      - name: Check/Set ANDROID_SDK_ROOT
+        shell: bash
         run: |
-          mkdir $env:USERPROFILE\.android
-          keytool -genkeypair `
-            -alias androiddebugkey `
-            -keypass android `
-            -keystore $env:USERPROFILE\.android\debug.keystore `
-            -storepass android `
-            -dname "CN=Android Debug,O=Android" `
-            -validity 10000 `
-            -keyalg RSA `
+          echo "Initial ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
+          echo "Initial ANDROID_HOME: $ANDROID_HOME"
+
+          if [[ -n "$ANDROID_SDK_ROOT" && -d "$ANDROID_SDK_ROOT" ]]; then
+            sdkPathToUse="$ANDROID_SDK_ROOT"
+          elif [[ -n "$ANDROID_HOME" && -d "$ANDROID_HOME" ]]; then
+            sdkPathToUse="$ANDROID_HOME"
+          else
+            echo "ANDROID_SDK_ROOT and ANDROID_HOME not set or invalid. Trying 'flutter config --machine'..."
+            flutterConfig=$(flutter config --machine)
+            FLUTTER_ANDROID_SDK_PATH=$(echo "$flutterConfig" | jq -r '."android-sdk"')
+            if [[ -n "$FLUTTER_ANDROID_SDK_PATH" && -d "$FLUTTER_ANDROID_SDK_PATH" ]]; then
+              sdkPathToUse="$FLUTTER_ANDROID_SDK_PATH"
+            else
+              echo "Error: Unable to determine a valid Android SDK path." >&2
+              exit 1
+            fi
+          fi
+
+          echo "ANDROID_SDK_ROOT=$sdkPathToUse" >> $GITHUB_ENV
+
+      - name: Get NDK Version
+        id: ndk_version_parser
+        working-directory: android/app
+        shell: bash
+        run: |
+          match=$(grep -Po 'ndkVersion\s*=\s*"\K[^"]+' build.gradle.kts | head -n1)
+          if [[ -n "$match" ]]; then
+            echo "Found NDK version: $match"
+            echo "ndk_version=$match" >> $GITHUB_OUTPUT
+          else
+            echo "Error: ndkVersion not found in build.gradle.kts" >&2
+            exit 1
+          fi
+
+      - name: Cache NDK
+        if: steps.ndk_version_parser.outputs.ndk_version
+        uses: actions/cache@main
+        with:
+          path: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ steps.ndk_version_parser.outputs.ndk_version }}
+          key: ${{ runner.os }}-ndk-${{ steps.ndk_version_parser.outputs.ndk_version }}
+          restore-keys: |
+            ${{ runner.os }}-ndk-
+
+      - name: Cache Pub dependencies
+        uses: actions/cache@main
+        with:
+          path: ${{ env.PUB_CACHE }}
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Cache Flutter Build
+        uses: actions/cache@main
+        with:
+          path: |
+            ${{ github.workspace }}/build
+            ${{ github.workspace }}/.dart_tool/flutter_build
+          key: ${{ runner.os }}-flutter-build-${{ hashFiles('**/pubspec.lock') }}-${{ hashFiles('android/**/build.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/settings.gradle', 'android/gradle.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-build-${{ hashFiles('**/pubspec.lock') }}-
+            ${{ runner.os }}-flutter-build-
+
+      - name: Generate debug keystore
+        shell: bash
+        run: |
+          mkdir -p $HOME/.android
+          keytool -genkeypair \
+            -alias androiddebugkey \
+            -keypass android \
+            -keystore $HOME/.android/debug.keystore \
+            -storepass android \
+            -dname "CN=Android Debug,O=Android" \
+            -validity 10000 \
+            -keyalg RSA \
             -keysize 3072
-            
-      - run: flutter --version
-      - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi
-      
+
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Flutter APK
+        run: flutter build apk --release --split-per-abi
+
       - name: Upload Build Artifact
         uses: actions/upload-artifact@main
         with:
-          name: simple_account
-          path: build\app\outputs\flutter-apk\**
+          name: simple_account-apks
+          path: build/app/outputs/flutter-apk/**
+          if-no-files-found: error
