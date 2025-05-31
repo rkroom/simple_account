@@ -46,6 +46,34 @@ jobs:
 
           echo "ANDROID_SDK_ROOT=$sdkPathToUse" >> $GITHUB_ENV
 
+      - name: Set CMake Version
+        id: cmake_version
+        run: echo "version=3.22.1" >> $GITHUB_OUTPUT
+
+      - name: Cache Android CMake
+        uses: actions/cache@main
+        id: cache-cmake 
+        with:
+          path: ${{ env.ANDROID_SDK_ROOT }}/cmake/${{ steps.cmake_version.outputs.version }}
+          key: ${{ runner.os }}-cmake-${{ steps.cmake_version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-
+
+      - name: Install Android CMake 
+        if: steps.cache-cmake.outputs.cache-hit != 'true' 
+        shell: bash
+        run: |
+          echo "缓存中未找到 CMake，正在安装 CMake ${{ steps.cmake_version.outputs.version }}..."
+          if command -v sdkmanager &> /dev/null; then
+            sdkmanager --install "cmake;${{ steps.cmake_version.outputs.version }}"
+          elif [ -f "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "cmake;${{ steps.cmake_version.outputs.version }}"
+          else
+            echo "错误：未找到 sdkmanager。无法安装 CMake。" >&2
+            exit 1
+          fi
+        continue-on-error: false 
+
       - name: Get NDK Version
         id: ndk_version_parser
         working-directory: android/app
