@@ -1,0 +1,81 @@
+name: Release Android App
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      STORE_PASSWORD:    ${{ secrets.KEY_PASSWORD }}
+      KEY_ALIAS:            ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD:         ${{ secrets.KEY_PASSWORD }}
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@main
+
+      - name: Set up JDK
+        uses: actions/setup-java@main
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@main
+        with:
+          channel: 'stable'
+
+      - name: Decode and Place Release Keystore
+        shell: bash
+        run: |
+          echo "解码发布密钥库..."
+          KEYSTORE_DIR="android/app"
+          KEYSTORE_FILENAME="keystore.jks"
+          FULL_KEYSTORE_PATH="${KEYSTORE_DIR}/${KEYSTORE_FILENAME}"
+          mkdir -p "$KEYSTORE_DIR"
+          echo "${{ secrets.APP_RELEASE_KEY }}" | base64 --decode > "$FULL_KEYSTORE_PATH"
+          echo "STORE_FILE=$KEYSTORE_FILENAME" >> $GITHUB_ENV
+          echo "已完成"
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Flutter APK for Release
+        run: |
+          flutter build apk --release --split-per-abi
+
+      - name: Delete existing GitHub Release 
+        if: ${{ success() && startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "正在尝试删除已存在的 Release: ${{ github.ref_name }}..."
+          gh release delete ${{ github.ref_name }} --repo ${{ github.repository }} --yes || echo "未找到标签为 ${{ github.ref_name }} 的 Release，或者它已被删除。将继续创建新的 Release。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@master
+        if: ${{ success() && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            ${{ github.ref_name }} 自动发布版本。
+            APK 文件已附在下方。
+          draft: false
+          prerelease: false
+          files: |
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+          fail_on_unmatched_files: true
