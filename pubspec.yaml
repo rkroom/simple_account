@@ -1,5 +1,5 @@
 name: simple_account
-description: "A new Flutter project."
+description: "An accounting project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,17 +16,11 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.0.2
+version: 1.0.0
 
 environment:
   sdk: ^3.7.2
 
-# Dependencies specify other packages that your package needs in order to work.
-# To automatically upgrade your package dependencies to the latest versions
-# consider running `flutter pub upgrade --major-versions`. Alternatively,
-# dependencies can be manually updated by changing the version numbers below to
-# the latest version available on pub.dev. To see which dependencies have newer
-# versions available, run `flutter pub outdated`.
 dependencies:
   flutter:
     sdk: flutter
@@ -63,19 +57,11 @@ dependencies:
   #本地通知
   flutter_local_notifications: ^19.2.1
   #定时任务
-  #pub.dev上的workmanager在flutter 3.29的编译中存在问题
-  #workmanager: ^0.5.2
-  workmanager:
-      git:
-        url: https://github.com/fluttercommunity/flutter_workmanager.git
-        path: workmanager
-        ref: main
+  workmanager: ^0.6.0
   #安全存储
   flutter_secure_storage: ^9.2.3
   #设备信息
   device_info_plus: ^11.3.3
-
-  # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
