@@ -23,7 +23,6 @@ class AccountWidgetState extends State<AccountWidget>
   @override
   bool get wantKeepAlive => true;
 
-  // 标签
   final tabs = ["统计", "账户"];
 
   static const _pageSize = 15;
@@ -170,7 +169,6 @@ class AccountWidgetState extends State<AccountWidget>
     getFirstLevelConsume();
   }
 
-  // 将支出，收入，转账页面添加到一个list
   listPages() {
     List<Widget> tabPages = [];
     return tabPages
@@ -178,7 +176,6 @@ class AccountWidgetState extends State<AccountWidget>
       ..add(account());
   }
 
-  // 返回页面
   Widget getTabBarPages() {
     return TabBarView(children: listPages());
   }
@@ -262,12 +259,7 @@ class AccountWidgetState extends State<AccountWidget>
           child: Container(
             // 背景颜色
             color: Theme.of(context).primaryColor,
-            child: Column(
-              children: <Widget>[
-                // 获取标签
-                getTabBar(),
-              ],
-            ),
+            child: Column(children: <Widget>[getTabBar()]),
           ),
         ),
         body: getTabBarPages(),
@@ -388,7 +380,24 @@ class AccountWidgetState extends State<AccountWidget>
           SizedBox(
             height: deviceHeight * 0.37,
             child: PieChart(
-              PieChartData(centerSpaceRadius: 0, sections: pieChartSections),
+              PieChartData(
+                centerSpaceRadius: 0,
+                sections: pieChartSections,
+                pieTouchData: PieTouchData(
+                  touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                    if (event is FlTapUpEvent) {
+                      final touchedIndex =
+                          pieTouchResponse
+                              ?.touchedSection
+                              ?.touchedSectionIndex ??
+                          -1;
+                      if (touchedIndex >= 0) {
+                        Navigator.pushNamed(context, "/statistic");
+                      }
+                    }
+                  },
+                ),
+              ),
             ),
           ),
           Expanded(
