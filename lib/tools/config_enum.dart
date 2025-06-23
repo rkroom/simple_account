@@ -18,3 +18,40 @@ enum AccountType {
 
   const AccountType(this.value);
 }
+
+enum ScheduleCycle {
+  once('一次'),
+  day('每天'),
+  week('每周'),
+  month('每月'),
+  year('每年'),
+  custom('自定义');
+
+  final String label;
+
+  const ScheduleCycle(this.label);
+
+  static ScheduleCycle fromString(String value) {
+    return ScheduleCycle.values.firstWhere(
+      (e) => e.name == value.toLowerCase(),
+      orElse: () => ScheduleCycle.custom,
+    );
+  }
+}
+
+enum ScheduleStatus {
+  continuing('进行中', 'continuing'),
+  finished('已完成', 'finshed'),
+  giveup('已放弃', 'giveup');
+
+  const ScheduleStatus(this.label, this.dbValue);
+  final String label;
+  final String dbValue;
+
+  static ScheduleStatus fromString(String dbValue) {
+    return ScheduleStatus.values.firstWhere(
+      (e) => e.dbValue == dbValue,
+      orElse: () => ScheduleStatus.continuing,
+    );
+  }
+}

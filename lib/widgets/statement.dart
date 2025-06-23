@@ -6,7 +6,9 @@ import '../tools/db.dart';
 import '../tools/event_bus.dart';
 
 class StatementWidget extends StatefulWidget {
-  const StatementWidget({super.key});
+  final DateTime? startTime;
+  final DateTime? endTime;
+  const StatementWidget({super.key, this.startTime, this.endTime});
 
   @override
   State<StatefulWidget> createState() {
@@ -39,9 +41,22 @@ class StatementWidgetState extends State<StatementWidget> {
     });
   }
 
+  @override
+  void didUpdateWidget(StatementWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.startTime != oldWidget.startTime ||
+        widget.endTime != oldWidget.endTime) {
+      _pagingController.refresh();
+    }
+  }
+
   Future<List<Map<String, dynamic>>> _fetchPage(int pageKey) async {
-    final offset = pageKey * _pageSize;
-    return DB().getBillDetails(_pageSize, offset);
+    return DB().getBillDetails(
+      _pageSize,
+      pageKey + 1,
+      startTime: widget.startTime,
+      endTime: widget.endTime,
+    );
   }
 
   void onItemPressed(Map<String, dynamic> item) {
@@ -151,7 +166,7 @@ class StatementWidgetState extends State<StatementWidget> {
                 );
               },
               noItemsFoundIndicatorBuilder: (context) {
-                return const Center(child: Text("尚无记录，添加第一笔记录吧！"));
+                return const Center(child: Text("尚无记录，添加一笔记录吧！"));
               },
             ),
           );

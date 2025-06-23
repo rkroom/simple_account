@@ -10,12 +10,8 @@ import '../pages/manage.dart';
 import 'config.dart';
 
 final Map<String, Function> routes = {
-  '/':
-      (context) =>
-          Global.jumpLoad
-              ? const BottomNavigationWidget()
-              : const LoadingWidget(),
-  '/home': (context) => const BottomNavigationWidget(),
+  '/': (context) => Global.jumpLoad ? HomeWidget() : const LoadingWidget(),
+  '/home': (context) => HomeWidget(),
   '/createdb': (context) => const CreateDatabaseWidget(),
   // arguments传递参数
   '/selectdb':

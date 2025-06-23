@@ -137,4 +137,44 @@ class ConfigService {
     var box = await _box;
     return box.put("notificationTaskTime", time);
   }
+
+  Future<bool> getScheduleNotificationTaskStatus() async {
+    var box = await _box;
+    return box.get("ScheduleNotificationTaskStatus", defaultValue: false);
+  }
+
+  Future<void> setScheduleNotificationTaskStatus(bool status) async {
+    var box = await _box;
+    return box.put("ScheduleNotificationTaskStatus", status);
+  }
+
+  Future<Map<String, int>> getScheduleNotificationTaskTime() async {
+    var box = await _box;
+    final raw = await box.get(
+      "scheduleNotificationTaskTime",
+      defaultValue: {"hour": 6, "minute": 0, "second": 0},
+    );
+    return Map<String, int>.from(
+      raw.cast<String, dynamic>(),
+    ).map((k, v) => MapEntry(k, v));
+  }
+
+  Future<void> setScheduleNotificationTaskTime(Map<String, int> time) async {
+    var box = await _box;
+    return box.put("scheduleNotificationTaskTime", time);
+  }
+
+  Future<bool> resetSettings() async {
+    var box = await _box;
+    try {
+      await box.delete("notificationTaskStatus");
+      await box.delete("notificationTaskTime");
+      await box.delete("ScheduleNotificationTaskStatus");
+      await box.delete("scheduleNotificationTaskTime");
+      return true;
+    } catch (e) {
+      //debugPrint(e.toString());
+      return false;
+    }
+  }
 }

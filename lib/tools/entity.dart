@@ -1,3 +1,5 @@
+import 'config_enum.dart';
+
 class Config {
   String path;
   String password;
@@ -77,5 +79,51 @@ class Bill {
       'consumeCategoryText': categoryText,
       'categoryId': categoryId,
     };
+  }
+}
+
+class ScheduleItem {
+  final int id;
+  final String content;
+  final String date;
+  final String? lastCompletedDate;
+  final String? finished;
+  final ScheduleCycle cycleValue;
+  final String created;
+  final ScheduleStatus status;
+  final String dateSign;
+  final String? finalDate;
+
+  ScheduleItem({
+    required this.id,
+    required this.content,
+    required this.date,
+    this.lastCompletedDate,
+    this.finished,
+    required this.cycleValue,
+    required this.created,
+    required this.status,
+    required this.dateSign,
+    this.finalDate,
+  });
+
+  @override
+  String toString() {
+    return 'ScheduleItem(id: $id, content: $content, date: $date, lastCompletedDate: $lastCompletedDate, finished: $finished, cycleValue: $cycleValue, created: $created, status: $status, dateSign: $dateSign,  finalDate: $finalDate)';
+  }
+
+  factory ScheduleItem.fromMap(Map<String, dynamic> map) {
+    return ScheduleItem(
+      id: map['id'],
+      content: map['content'],
+      date: map['date'],
+      lastCompletedDate: map['last_completed_date'],
+      finished: map['finished'],
+      cycleValue: ScheduleCycle.values.byName(map['round']),
+      created: map["createdf"],
+      status: ScheduleStatus.values.byName(map['status']),
+      dateSign: map['datesign'] ?? '',
+      finalDate: map['finaldate'],
+    );
   }
 }

@@ -1,11 +1,9 @@
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:simple_account/tools/config.dart';
 import 'package:simple_account/tools/config_service.dart';
+import 'package:simple_account/tools/notification_service.dart';
 import 'package:simple_account/tools/workmanager_tool.dart';
-import 'package:workmanager/workmanager.dart';
 
 import 'config_enum.dart';
 import 'db.dart';
@@ -203,13 +201,8 @@ Future<Map> periodicStatistics() async {
   };
 }
 
-Future<void> initializeAndScheduleTask() async {
-  // 初始化Workmanager
-  await Workmanager().initialize(
-    callbackDispatcher,
-    isInDebugMode: kDebugMode, // 调试模式下设置为 true
-  );
-  Global.isWorkmanagerInit = true;
-  scheduleDailyTask();
-  ConfigService().setScheduledTaskTime(DateTime.now());
+Future<void> performInitialSetup() async {
+  await NotificationService().initNotification();
+  await WorkmanagerTool.setupAndScheduleTasks();
+  ConfigService().setNotificationRegistered(true);
 }

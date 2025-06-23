@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 import 'tools/config.dart';
 import 'tools/routes.dart';
@@ -10,7 +12,7 @@ void main() async {
   // 初始化数据之后再加载UI，以及账单监听服务
   await Global.init();
 
-  runApp(const MyApp());
+  initializeDateFormatting().then((_) => runApp(MyApp()));
 }
 
 class MyApp extends StatefulWidget {
@@ -40,6 +42,13 @@ class MyAppState extends State<MyApp> {
         useMaterial3: false,
         //primaryColor: const Color(0xff6200EE),
       ),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [Locale('en', ''), Locale('zh', '')],
+      locale: const Locale('zh', ''),
       initialRoute: firstPage,
       onGenerateRoute: onGenerateRoute,
     );

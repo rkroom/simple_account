@@ -17,8 +17,6 @@ class Global {
 
   static bool isReturningFromSettings = false;
 
-  static bool isWorkmanagerInit = false;
-
   static late String externalStorageDirectory;
 
   static Future init() async {

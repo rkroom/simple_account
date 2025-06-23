@@ -6,6 +6,7 @@ import 'package:fl_chart/fl_chart.dart';
 
 import '../tools/config_enum.dart';
 import '../tools/db.dart';
+import '../tools/event_bus.dart';
 import '../tools/tools.dart';
 
 class AccountWidget extends StatefulWidget {
@@ -90,7 +91,6 @@ class AccountWidgetState extends State<AccountWidget>
     previousMonthIncome = checkDBResult(results[5][0]["amount"]);
     currentlyDayConsume = checkDBResult(results[6][0]["amount"]);
     previousDayConsume = checkDBResult(results[7][0]["amount"]);
-
     // 统一调用 setState 更新 UI
     setState(() {});
   }
@@ -158,9 +158,14 @@ class AccountWidgetState extends State<AccountWidget>
     });
   }
 
+  void _refreshAccount(arg) {
+    _pagingController.refresh();
+  }
+
   @override
   void initState() {
     super.initState();
+    bus.on("update_account", _refreshAccount);
     getStatistics();
     getFirstLevelConsume();
   }
@@ -327,6 +332,30 @@ class AccountWidgetState extends State<AccountWidget>
   Widget statistics() {
     double deviceHeight = MediaQuery.of(context).size.height;
 
+    bool hasData =
+        totalAssets != 0.0 ||
+        totalDebts != 0.0 ||
+        currentlyMonthConsume != 0.0 ||
+        currentlyMonthIncome != 0.0 ||
+        previousMonthConsume != 0.0 ||
+        previousMonthIncome != 0.0 ||
+        currentlyDayConsume != 0.0 ||
+        previousDayConsume != 0.0 ||
+        pieChartSections.isNotEmpty;
+
+    if (!hasData) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.info_outline, size: 50, color: Colors.grey),
+            SizedBox(height: 10),
+            Text("暂无可展示数据", style: TextStyle(fontSize: 18, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       body: Column(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -395,8 +424,10 @@ class AccountWidgetState extends State<AccountWidget>
 
   @override
   void dispose() {
+    _newAccountNameController.dispose();
     _pagingController.dispose();
     super.dispose();
+    bus.off("refresh_account", _refreshAccount);
   }
 }
 

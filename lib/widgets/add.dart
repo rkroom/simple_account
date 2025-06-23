@@ -3,14 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
 import 'package:flutter_picker_plus/flutter_picker_plus.dart';
+import 'package:simple_account/tools/config.dart';
 
+import '../tools/bill_listener_service.dart';
 import '../tools/db.dart';
 import '../tools/event_bus.dart';
 import '../tools/native_method_channel.dart';
 import '../tools/tools.dart';
 import '../tools/config_enum.dart';
-import '../widgets/quick_select.dart';
-import '../widgets/transactions.dart';
+import 'quick_select.dart';
+import 'transactions.dart';
 
 class AddWidget extends StatefulWidget {
   const AddWidget({super.key});
@@ -24,6 +26,7 @@ class AddWidgetState extends State<AddWidget>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   static const TextScaler customTextScaler = TextScaler.linear(1.2);
   bool _hasPermission = false;
+  int _billCount = 0; // 账单数量
 
   @override
   bool get wantKeepAlive => true;
@@ -46,7 +49,6 @@ class AddWidgetState extends State<AddWidget>
   String showIncomeAccount = "请选择";
   int? incomeAccountId;
   List incomeCategory = [];
-  //List<int>? selectedIncomeCategory;
   String showIncomeCategory = "请选择";
   Map incomeCategoryIndex = {};
   int? incomeCategoryId;
@@ -63,7 +65,6 @@ class AddWidgetState extends State<AddWidget>
   // 账户信息功能
   List accountName = [];
   Map accountIndex = {};
-  //Map accountType = {};
 
   //添加标志变量，当whenTime修改后一定时间内，应用从后台恢复到前台不修改whenTime
   DateTime timeSign = DateTime.now();
@@ -89,11 +90,10 @@ class AddWidgetState extends State<AddWidget>
       // 账户信息
       accountName = results[2][0];
       accountIndex = results[2][1];
-      // accountType = results[2][2];
     });
   }
 
-  Future<void> _checkPermissions() async {
+  Future<void> _checkPermissionsAndFetchBills() async {
     try {
       final results = await Future.wait([
         NativeMethodChannel.instance.checkAccessibilityPermission(),
@@ -108,14 +108,38 @@ class AddWidgetState extends State<AddWidget>
           _hasPermission =
               accessibilityPermission || notificationListenerPermission;
         });
+        if (_hasPermission) {
+          final bills = await BillListenerService().getBills();
+          if (mounted) {
+            setState(() {
+              _billCount = bills.length;
+            });
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _billCount = 0;
+            });
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _hasPermission = false;
+          _billCount = 0;
         });
       }
     }
+  }
+
+  Future<void> _updateAccount(arg) {
+    return getAccount().then((list) {
+      setState(() {
+        accountName = list[0];
+        accountIndex = list[1];
+      });
+    });
   }
 
   @override
@@ -137,16 +161,8 @@ class AddWidgetState extends State<AddWidget>
       });
     });
 
-    bus.on("update_account", (arg) {
-      getAccount().then((list) {
-        setState(() {
-          accountName = list[0];
-          accountIndex = list[1];
-          //accountType = list[2];
-        });
-      });
-    });
-    _checkPermissions();
+    bus.on("update_account", _updateAccount);
+    _checkPermissionsAndFetchBills(); // 初始调用
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -157,6 +173,10 @@ class AddWidgetState extends State<AddWidget>
     // 仅处理 resumed 状态
     if (state != AppLifecycleState.resumed) {
       return;
+    }
+    if (Global.isReturningFromSettings) {
+      _checkPermissionsAndFetchBills();
+      Global.isReturningFromSettings = false;
     }
 
     // 获取当前时间
@@ -175,7 +195,7 @@ class AddWidgetState extends State<AddWidget>
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
     bus.off("update_category");
-    bus.off("update_account");
+    bus.off("update_account", _updateAccount);
   }
 
   @override
@@ -268,15 +288,46 @@ class AddWidgetState extends State<AddWidget>
                 Positioned(
                   bottom: 5.0,
                   right: 12.0,
-                  child: IconButton(
-                    icon: Icon(
-                      size: 35.0,
-                      Icons.article,
-                      color: Colors.blue[600],
-                    ),
-                    onPressed: () {
-                      Navigator.of(context).pushNamed('/billListener');
-                    },
+                  child: Stack(
+                    children: [
+                      IconButton(
+                        icon: Icon(
+                          size: 35.0,
+                          Icons.article,
+                          color: Colors.blue[600],
+                        ),
+                        onPressed: () async {
+                          await Navigator.of(
+                            context,
+                          ).pushNamed('/billListener');
+                          _checkPermissionsAndFetchBills();
+                        },
+                      ),
+                      if (_billCount > 0)
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: Colors.red,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            constraints: const BoxConstraints(
+                              minWidth: 16,
+                              minHeight: 16,
+                            ),
+                            child: Text(
+                              '$_billCount',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
             ],
@@ -315,7 +366,6 @@ class AddWidgetState extends State<AddWidget>
 
   // 转账
   Widget transfer() {
-    // todo 将其抽离为组件
     return Stack(
       alignment: Alignment.bottomCenter,
       children: [
@@ -465,7 +515,7 @@ class AddWidgetState extends State<AddWidget>
                     _transferAmountController.clear();
                     _transferCommentController.clear();
                   } catch (error) {
-                    //print(error);
+                    //debugPrint(error);
                     showNoticeSnackBar(context, "添加失败，请检查输入");
                   }
                 },

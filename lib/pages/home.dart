@@ -8,39 +8,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:simple_account/tools/workmanager_tool.dart';
 
 import '../tools/config.dart';
 import '../tools/config_service.dart';
 import '../tools/native_method_channel.dart';
 import '../tools/notification_service.dart';
 import '../tools/tools.dart';
-import 'account.dart';
-import 'add.dart';
-import 'statement.dart';
+import '../widgets/account_book_home.dart';
+import '../widgets/planned_task_home.dart';
 
-class BottomNavigationWidget extends StatefulWidget {
-  const BottomNavigationWidget({super.key});
+class HomeWidget extends StatefulWidget {
+  const HomeWidget({super.key});
 
   @override
   State<StatefulWidget> createState() {
-    return BottomNavigationWidgetState();
+    return HomeWidgetState();
   }
 }
 
-class BottomNavigationWidgetState extends State<BottomNavigationWidget>
-    with WidgetsBindingObserver {
-  Key _childKey = UniqueKey();
-
-  // 设定进入时显示的模块
-  int _currentIndex = 0;
-
-  // 将各个模块添加到List
-  List<Widget> pages = [];
-  // 标题
-  List titles = ["添加", "账单", "账户"];
+class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
+  int _selectedHome = 0;
 
   // 定时器，应用进入后台后一定时间内未被再次打开则彻底退出应用。
   Timer? _exitTimer;
+
+  late final StreamSubscription<String?> _notificationSubscription;
 
   bool isSameDate(DateTime date1, DateTime date2) {
     return date1.year == date2.year &&
@@ -48,28 +41,49 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         date1.day == date2.day;
   }
 
+  void _configureSelectNotificationListener() {
+    _notificationSubscription = selectNotificationStream.stream.listen((
+      String? payload,
+    ) async {
+      if (payload == '/home/schedule') {
+        setState(() {
+          _selectedHome = 1;
+        });
+      } else if (payload == '/statistic') {
+        if (mounted) {
+          Navigator.of(context).pushNamed('/statistic');
+        }
+      }
+    });
+  }
+
+  void _checkAppLaunchFromNotification() {
+    NotificationService().checkAppLaunchFromNotification();
+  }
+
   void checkAndSetWorkmanagerTasks() async {
-    bool notificationTaskStatus =
-        await ConfigService().getNotificationTaskStatus();
-    if (!notificationTaskStatus) {
+    bool dailyTaskStatus = await ConfigService().getNotificationTaskStatus();
+    bool scheduleTaskStatus =
+        await ConfigService().getScheduleNotificationTaskStatus();
+
+    if (!dailyTaskStatus && !scheduleTaskStatus) {
       return;
     }
+
     bool succeeded = await ConfigService().getNotificationRegistered();
     if (!succeeded) {
-      await NotificationService().initNotification();
-      await initializeAndScheduleTask();
-      ConfigService().setNotificationRegistered(true);
+      await performInitialSetup();
       return;
     }
     DateTime? scheduledTaskTime = await ConfigService().getScheduledTaskTime();
     if (scheduledTaskTime == null) {
-      await initializeAndScheduleTask();
+      await WorkmanagerTool.setupAndScheduleTasks();
       return;
     }
     final now = DateTime.now();
     if (!isSameDate(scheduledTaskTime, now.add(const Duration(days: -1))) &&
         !isSameDate(scheduledTaskTime, now)) {
-      await initializeAndScheduleTask();
+      await WorkmanagerTool.setupAndScheduleTasks();
       return;
     }
   }
@@ -101,11 +115,10 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    pages = [
-      AddWidget(key: _childKey),
-      const StatementWidget(),
-      const AccountWidget(),
-    ];
+
+    _configureSelectNotificationListener();
+    _checkAppLaunchFromNotification();
+
     checkAndSetWorkmanagerTasks();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -117,7 +130,7 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
               (BuildContext dialogContext) => AlertDialog(
                 title: const Text('说明'),
                 content: const Text(
-                  '欢迎使用！\n\n1. 自动记录账单相应权限。\n2. 自动记录账单需要开启自启动。\n3. 账单推送需要开启通知权限。',
+                  '欢迎使用！\n\n1. 自动记录账单相应权限。\n2. 自动记录账单需要开启自启动。\n3. 消息推送需要开启通知权限。',
                 ),
                 actions: [
                   TextButton(
@@ -138,30 +151,6 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     super.didChangeAppLifecycleState(state);
 
-    // 当应用恢复到前台时
-    if (state == AppLifecycleState.resumed && Global.isReturningFromSettings) {
-      // 检查权限状态
-      final bool hasAccessibilityPermission =
-          await NativeMethodChannel.instance.checkAccessibilityPermission();
-      final bool hasNotificationPermission =
-          await NativeMethodChannel.instance
-              .checkNotificationListenerPermission();
-      if (hasAccessibilityPermission || hasNotificationPermission) {
-        //刷新组件以显示按钮
-        setState(() {
-          _childKey = UniqueKey();
-          //重置pages，否则仅更新_childKey不会触发刷新
-          pages = [
-            AddWidget(key: _childKey),
-            const StatementWidget(),
-            const AccountWidget(),
-          ];
-        });
-      }
-      // 重置标志位，确保只检查一次
-      Global.isReturningFromSettings = false;
-    }
-
     if (state == AppLifecycleState.resumed) {
       // 用户重新回到应用时，取消定时器
       if (_exitTimer != null && _exitTimer!.isActive) {
@@ -174,7 +163,28 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _exitTimer?.cancel();
+    _notificationSubscription.cancel();
     super.dispose();
+  }
+
+  Widget _buildBody() {
+    switch (_selectedHome) {
+      case 1:
+        return PlannedTaskHome();
+      case 0:
+      default:
+        return AccountBookHome();
+    }
+  }
+
+  Widget _buildAppBarTitle() {
+    switch (_selectedHome) {
+      case 1:
+        return const Text('计划');
+      case 0:
+      default:
+        return const Text('账本');
+    }
   }
 
   @override
@@ -196,7 +206,65 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
         await NativeMethodChannel.instance.minimizeApp();
       },
       child: Scaffold(
-        appBar: AppBar(title: Text(titles[_currentIndex])),
+        appBar: AppBar(
+          title: GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedHome = _selectedHome == 0 ? 1 : 0;
+              });
+            },
+            child: _buildAppBarTitle(),
+          ),
+          actions: [
+            Builder(
+              builder:
+                  (context) => IconButton(
+                    icon: const Icon(Icons.settings),
+                    onPressed: () => Scaffold.of(context).openEndDrawer(),
+                    tooltip:
+                        MaterialLocalizations.of(context).openAppDrawerTooltip,
+                  ),
+            ),
+          ],
+        ),
+        drawer: Drawer(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              const DrawerHeader(
+                decoration: BoxDecoration(color: Colors.blue),
+                child: Text('菜单'),
+              ),
+              ListTile(
+                title: const Text('账本'),
+                onTap: () {
+                  setState(() {
+                    _selectedHome = 0;
+                  });
+                  Navigator.of(context).pop();
+                },
+              ),
+              ExpansionTile(
+                title: const Text('计划'),
+                initiallyExpanded: true,
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16.0),
+                    child: ListTile(
+                      title: const Text('日程'),
+                      onTap: () {
+                        setState(() {
+                          _selectedHome = 1;
+                        });
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
         endDrawer: Drawer(
           child: ListView(
             padding: EdgeInsets.zero,
@@ -359,11 +427,8 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                                         Navigator.of(context)
                                             .pushNamed('/configuration')
                                             .then((value) => {});
-                                        Global.isReturningFromSettings = true;
                                       } on PlatformException catch (e) {
-                                        debugPrint(
-                                          "Failed to request permission: '${e.message}'.",
-                                        );
+                                        debugPrint("获取权限失败: '${e.message}'.");
                                       }
                                     },
                                     child: const Text('确定'),
@@ -375,7 +440,7 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
                         }
                       }
                     } on PlatformException catch (e) {
-                      debugPrint("Failed to check permission: '${e.message}'.");
+                      debugPrint("检测权限失败: '${e.message}'.");
                     }
                   },
                 ),
@@ -392,20 +457,7 @@ class BottomNavigationWidgetState extends State<BottomNavigationWidget>
             ],
           ),
         ),
-        body: pages[_currentIndex],
-        bottomNavigationBar: BottomNavigationBar(
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.plus_one), label: '记账'),
-            BottomNavigationBarItem(icon: Icon(Icons.receipt), label: '账单'),
-            BottomNavigationBarItem(icon: Icon(Icons.local_atm), label: '账户'),
-          ],
-          currentIndex: _currentIndex,
-          onTap: (int i) {
-            setState(() {
-              _currentIndex = i;
-            });
-          },
-        ),
+        body: _buildBody(),
       ),
     );
   }

@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:simple_account/tools/config.dart';
 import 'package:simple_account/tools/config_service.dart';
 import 'package:simple_account/tools/entity.dart';
 import 'package:simple_account/tools/native_method_channel.dart';
 import 'package:simple_account/tools/tools.dart';
 import 'package:simple_account/tools/workmanager_tool.dart';
+import '../tools/config.dart';
 
 class ConfigurationWidget extends StatefulWidget {
   const ConfigurationWidget({super.key});
@@ -21,11 +21,16 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   bool _notificationChecked = false;
   bool _postNotificationChecked = false;
   bool _notificationTaskChecked = false;
+  bool _scheduleNotificationTaskChecked = false;
   bool _isLoading = true;
 
   int _taskHour = 0;
   int _taskMinute = 0;
   int _taskSecond = 0;
+
+  int _scheduleTaskHour = 0;
+  int _scheduleTaskMinute = 0;
+  int _scheduleTaskSecond = 0;
 
   List<PackageConfig> _abAllowedPackages = [];
   List<PackageConfig> _nlAllowedPackages = [];
@@ -61,8 +66,16 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               .checkNotificationListenerPermission();
       PermissionStatus status = await Permission.notification.status;
       final postNoti = status == PermissionStatus.granted;
+
+      // 每日任务
       final taskStatus = await ConfigService().getNotificationTaskStatus();
       final savedTime = await ConfigService().getNotificationTaskTime();
+
+      // 计划任务
+      final scheduleTaskStatus =
+          await ConfigService().getScheduleNotificationTaskStatus();
+      final savedScheduleTime =
+          await ConfigService().getScheduleNotificationTaskTime();
 
       final List<Map<String, dynamic>>? rawAbData =
           await NativeMethodChannel.instance.getAbAllowPackageConfig();
@@ -79,10 +92,17 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _accessibilityChecked = acc;
         _notificationChecked = noti;
         _postNotificationChecked = postNoti;
+
         _notificationTaskChecked = taskStatus;
         _taskHour = savedTime['hour']!;
         _taskMinute = savedTime['minute']!;
         _taskSecond = savedTime['second']!;
+
+        _scheduleNotificationTaskChecked = scheduleTaskStatus;
+        _scheduleTaskHour = savedScheduleTime['hour']!;
+        _scheduleTaskMinute = savedScheduleTime['minute']!;
+        _scheduleTaskSecond = savedScheduleTime['second']!;
+
         _abAllowedPackages = abPackages;
         _nlAllowedPackages = nlPackages;
         _isLoading = false;
@@ -108,19 +128,50 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
           'second': dt.second,
         };
         await ConfigService().setNotificationTaskTime(newTime);
-        bool notificationTaskStatus =
-            await ConfigService().getNotificationTaskStatus();
-        if (notificationTaskStatus) {
-          if (!Global.isWorkmanagerInit) {
-            await initializeAndScheduleTask();
-          }
-          scheduleDailyTask();
+        if (_notificationTaskChecked) {
+          await WorkmanagerTool.scheduleDailyTask();
         }
+
         if (!mounted) return;
         setState(() {
           _taskHour = dt.hour;
           _taskMinute = dt.minute;
           _taskSecond = dt.second;
+        });
+      },
+    );
+  }
+
+  void _pickScheduleTaskTime() {
+    DatePicker.showTimePicker(
+      context,
+      showSecondsColumn: true,
+      currentTime: DateTime(
+        0,
+        0,
+        0,
+        _scheduleTaskHour,
+        _scheduleTaskMinute,
+        _scheduleTaskSecond,
+      ),
+      locale: LocaleType.zh,
+      onConfirm: (DateTime dt) async {
+        final newTime = {
+          'hour': dt.hour,
+          'minute': dt.minute,
+          'second': dt.second,
+        };
+        await ConfigService().setScheduleNotificationTaskTime(newTime);
+
+        if (_scheduleNotificationTaskChecked) {
+          await WorkmanagerTool.scheduleNotificationTask();
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _scheduleTaskHour = dt.hour;
+          _scheduleTaskMinute = dt.minute;
+          _scheduleTaskSecond = dt.second;
         });
       },
     );
@@ -146,8 +197,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('确认操作'),
-          content: const Text('您确定要重置设置吗？此操作不可撤销。'),
+          title: const Text('确认'),
+          content: const Text('您确定要重置设置吗？此操作不可撤销（已授予权限需要您到系统设置页面手动取消）。'),
           actions: <Widget>[
             TextButton(
               child: const Text('取消'),
@@ -169,12 +220,14 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     if (confirmReset == true) {
       setState(() => _isLoading = true);
       try {
-        final count = await NativeMethodChannel.instance.clearAllConfig();
+        await ConfigService().resetSettings();
+        await NativeMethodChannel.instance.clearAllConfig();
+
+        await WorkmanagerTool.cancelDailyTask();
+        await WorkmanagerTool.cancelScheduleNotificationTask();
+
         if (mounted) {
-          showNoticeSnackBar(
-            context,
-            count != null && count > 0 ? '已成功重置所有设置' : '没有设置被重置或操作失败',
-          );
+          showNoticeSnackBar(context, '已成功重置所有设置');
           await _initializePermissionsAndTime();
         }
       } catch (e) {
@@ -184,6 +237,33 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         }
       }
     }
+  }
+
+  Future<void> handleDailyNotificationToggle(bool newCheckedState) async {
+    await ConfigService().setNotificationTaskStatus(newCheckedState);
+    if (newCheckedState) {
+      await WorkmanagerTool.scheduleDailyTask();
+    } else {
+      await WorkmanagerTool.cancelDailyTask();
+    }
+    if (!mounted) return;
+    setState(() {
+      _notificationTaskChecked = newCheckedState;
+    });
+  }
+
+  Future<void> handleScheduleNotificationToggle(bool newCheckedState) async {
+    await ConfigService().setScheduleNotificationTaskStatus(newCheckedState);
+    if (newCheckedState) {
+      await WorkmanagerTool.scheduleNotificationTask();
+    } else {
+      await WorkmanagerTool.cancelScheduleNotificationTask();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _scheduleNotificationTaskChecked = newCheckedState;
+    });
   }
 
   @override
@@ -199,27 +279,13 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         '${_taskMinute.toString().padLeft(2, '0')}:'
         '${_taskSecond.toString().padLeft(2, '0')}';
 
+    final scheduleTimeLabel =
+        '${_scheduleTaskHour.toString().padLeft(2, '0')}:'
+        '${_scheduleTaskMinute.toString().padLeft(2, '0')}:'
+        '${_scheduleTaskSecond.toString().padLeft(2, '0')}';
+
     final String abSubtitle = _getSubtitleText(_abAllowedPackages);
     final String nlSubtitle = _getSubtitleText(_nlAllowedPackages);
-
-    Future<void> handleDailyNotificationToggle(bool newCheckedState) async {
-      await ConfigService().setNotificationTaskStatus(newCheckedState);
-      if (newCheckedState) {
-        if (!Global.isWorkmanagerInit) {
-          await initializeAndScheduleTask();
-        }
-        scheduleDailyTask();
-      } else {
-        if (!Global.isWorkmanagerInit) {
-          await initializeAndScheduleTask();
-        }
-        cancelDailyTask();
-      }
-      if (!mounted) return;
-      setState(() {
-        _notificationTaskChecked = newCheckedState;
-      });
-    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('配置')),
@@ -318,6 +384,33 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               trailing: IconButton(
                 icon: const Icon(Icons.access_time),
                 onPressed: _pickTaskTime,
+              ),
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('计划通知开关'),
+              trailing: Checkbox(
+                value: _scheduleNotificationTaskChecked,
+                onChanged: (bool? checked) async {
+                  if (checked != null) {
+                    await handleScheduleNotificationToggle(checked);
+                  }
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                await handleScheduleNotificationToggle(
+                  !_scheduleNotificationTaskChecked,
+                );
+              },
+            ),
+            ListTile(
+              title: const Text('检测计划时间'),
+              subtitle: Text(scheduleTimeLabel),
+              trailing: IconButton(
+                icon: const Icon(Icons.access_time),
+                onPressed: _pickScheduleTaskTime,
               ),
             ),
             const Divider(),
