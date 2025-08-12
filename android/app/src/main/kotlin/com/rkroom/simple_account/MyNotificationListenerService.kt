@@ -76,7 +76,7 @@ class MyNotificationListenerService : NotificationListenerService() {
 
         // 发送账单，以便在打开bill_listener页面时也能及时添加新的账单
         // 在需要的情况下
-        // 可以调用MisAppRunning检查应用的运行情况
+        // 可以调用isAppRunning检查应用的运行情况
         // 同时设置一个标志位（isSendNotification）,在进入bill_listener时修改其状态，退出时还原状态
         // 在两者同时满足的情况下才发送账单
         /*

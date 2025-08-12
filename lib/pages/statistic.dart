@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:simple_account/tools/db.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -92,7 +94,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
           ),
           content: SizedBox(
             width: double.maxFinite,
-            height: 500,
+            height: MediaQuery.of(context).size.height * 0.6,
             child: StatementWidget(startTime: startTime, endTime: endTime),
           ),
           actions: [
@@ -150,7 +152,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
       endDay = _lastDayOfMonth.day;
     }
 
-    final double interval = endDay > 1 ? endDay / 6.0 : 1;
+    final double interval = max(1, (endDay / 6).ceilToDouble());
 
     for (int i = 1; i <= endDay; i++) {
       final day = DateTime.utc(_focusedDay.year, _focusedDay.month, i);
@@ -212,7 +214,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
                   reservedSize: 30,
                   interval: interval,
                   getTitlesWidget: (value, meta) {
-                    if (value == 0 || value > endDay) {
+                    if (value > endDay) {
                       return Container();
                     }
                     return SideTitleWidget(
@@ -269,124 +271,121 @@ class StatisticWidgetState extends State<StatisticWidget> {
     );
     final endTime = startTime.add(const Duration(days: 1));
 
-    return SizedBox(
-      height: 380,
-      child: StatementWidget(startTime: startTime, endTime: endTime),
-    );
+    return StatementWidget(startTime: startTime, endTime: endTime);
   }
 
   Widget _buildCalendarView() {
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          TableCalendar<double>(
-            daysOfWeekHeight: 20.0,
-            firstDay: _firstDayOfMonth,
-            lastDay: _lastDayOfMonth,
-            focusedDay: _focusedDay,
-            startingDayOfWeek: StartingDayOfWeek.monday,
-            locale: 'zh_CN',
-            availableGestures: AvailableGestures.none,
-            headerStyle: const HeaderStyle(
-              formatButtonVisible: false,
-              leftChevronVisible: false,
-              rightChevronVisible: false,
-              titleCentered: true,
+    return Column(
+      children: [
+        TableCalendar<double>(
+          daysOfWeekHeight: 20.0,
+          firstDay: _firstDayOfMonth,
+          lastDay: _lastDayOfMonth,
+          focusedDay: _focusedDay,
+          startingDayOfWeek: StartingDayOfWeek.monday,
+          locale: 'zh_CN',
+          availableGestures: AvailableGestures.none,
+          headerStyle: const HeaderStyle(
+            formatButtonVisible: false,
+            leftChevronVisible: false,
+            rightChevronVisible: false,
+            titleCentered: true,
+          ),
+          daysOfWeekStyle: const DaysOfWeekStyle(
+            weekdayStyle: TextStyle(fontSize: 13),
+            weekendStyle: TextStyle(fontSize: 13),
+          ),
+          calendarStyle: CalendarStyle(
+            weekendTextStyle: const TextStyle(),
+            todayDecoration: const BoxDecoration(
+              color: Colors.transparent,
+              shape: BoxShape.rectangle,
             ),
-            daysOfWeekStyle: const DaysOfWeekStyle(
-              weekdayStyle: TextStyle(fontSize: 13),
-              weekendStyle: TextStyle(fontSize: 13),
+            todayTextStyle: const TextStyle(color: Colors.black87),
+            selectedDecoration: BoxDecoration(
+              color: Colors.blue.shade400,
+              shape: BoxShape.circle,
             ),
-            calendarStyle: CalendarStyle(
-              weekendTextStyle: const TextStyle(),
-              todayDecoration: const BoxDecoration(
-                color: Colors.transparent,
-                shape: BoxShape.rectangle,
-              ),
-              todayTextStyle: const TextStyle(color: Colors.black87),
-              selectedDecoration: BoxDecoration(
-                color: Colors.blue.shade400,
-                shape: BoxShape.circle,
-              ),
-              selectedTextStyle: const TextStyle(color: Colors.white),
-            ),
-            selectedDayPredicate: (day) {
-              return isSameDay(_selectedDay, day);
-            },
-            onDaySelected: (selectedDay, focusedDay) {
-              if (_getEventsForDay(selectedDay).isEmpty) {
-                if (_selectedDay != null) {
-                  setState(() {
-                    _selectedDay = null;
-                  });
-                }
-                return;
-              }
-              setState(() {
-                if (isSameDay(_selectedDay, selectedDay)) {
+            selectedTextStyle: const TextStyle(color: Colors.white),
+          ),
+          selectedDayPredicate: (day) {
+            return isSameDay(_selectedDay, day);
+          },
+          onDaySelected: (selectedDay, focusedDay) {
+            if (_getEventsForDay(selectedDay).isEmpty) {
+              if (_selectedDay != null) {
+                setState(() {
                   _selectedDay = null;
-                } else {
-                  _selectedDay = selectedDay;
-                }
-              });
+                });
+              }
+              return;
+            }
+            setState(() {
+              if (isSameDay(_selectedDay, selectedDay)) {
+                _selectedDay = null;
+              } else {
+                _selectedDay = selectedDay;
+              }
+            });
+          },
+          calendarBuilders: CalendarBuilders(
+            dowBuilder: (context, day) {
+              const dowText = {
+                1: '一',
+                2: '二',
+                3: '三',
+                4: '四',
+                5: '五',
+                6: '六',
+                7: '日',
+              };
+              return Center(
+                child: Text(
+                  dowText[day.weekday]!,
+                  style: const TextStyle(fontSize: 12.0),
+                ),
+              );
             },
-            calendarBuilders: CalendarBuilders(
-              dowBuilder: (context, day) {
-                const dowText = {
-                  1: '一',
-                  2: '二',
-                  3: '三',
-                  4: '四',
-                  5: '五',
-                  6: '六',
-                  7: '日',
-                };
-                return Center(
-                  child: Text(
-                    dowText[day.weekday]!,
-                    style: const TextStyle(fontSize: 12.0),
-                  ),
-                );
-              },
-              markerBuilder: (context, date, events) {
-                if (events.isNotEmpty) {
-                  final totalExpense = events.reduce((sum, item) => sum + item);
-                  return Positioned(
-                    bottom: 3,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          '¥${totalExpense.toStringAsFixed(0)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color:
-                                isSameDay(_selectedDay, date)
-                                    ? Colors.white
-                                    : Colors.black87,
-                          ),
+            markerBuilder: (context, date, events) {
+              if (events.isNotEmpty) {
+                final totalExpense = events.reduce((sum, item) => sum + item);
+                return Positioned(
+                  bottom: 3,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        '¥${totalExpense.toStringAsFixed(0)}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color:
+                              isSameDay(_selectedDay, date)
+                                  ? Colors.white
+                                  : Colors.black87,
                         ),
                       ),
                     ),
-                  );
-                }
-                return null;
-              },
-            ),
-            eventLoader: _getEventsForDay,
+                  ),
+                );
+              }
+              return null;
+            },
           ),
-          const Divider(height: 1, indent: 16, endIndent: 16),
-          AnimatedSwitcher(
+          eventLoader: _getEventsForDay,
+        ),
+        const Divider(height: 1, indent: 16, endIndent: 16),
+        Expanded(
+          child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             child:
                 _selectedDay == null
                     ? _buildLineChart()
                     : _buildStatementForSelectedDay(),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

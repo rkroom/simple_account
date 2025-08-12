@@ -118,9 +118,7 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                 return Stack(
                   children: [
                     Transactions(
-                      //添加UniqueKey，否则删除时，只会删除最后一个元素
-                      //如果列表因不相关的更改而重建，或者项目被低效地重新排序/删除，Transactions 内任何未保存的更改都将丢失
-                      key: UniqueKey(),
+                      key: ObjectKey(billItem),
                       amount: billItem.detailed,
                       flow: Transaction.consume,
                       accountNames: accounts[0],

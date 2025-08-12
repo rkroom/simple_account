@@ -8,7 +8,15 @@ import '../tools/event_bus.dart';
 class StatementWidget extends StatefulWidget {
   final DateTime? startTime;
   final DateTime? endTime;
-  const StatementWidget({super.key, this.startTime, this.endTime});
+
+  final bool isShrinkWrapped;
+
+  const StatementWidget({
+    super.key,
+    this.startTime,
+    this.endTime,
+    this.isShrinkWrapped = false,
+  });
 
   @override
   State<StatefulWidget> createState() {
@@ -99,79 +107,85 @@ class StatementWidgetState extends State<StatementWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: PagingListener<int, Map<String, dynamic>>(
-        controller: _pagingController,
-        builder: (context, state, fetchNextPage) {
-          return PagedListView<int, Map<String, dynamic>>(
-            state: state,
-            fetchNextPage: fetchNextPage,
-            builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
-              itemBuilder: (context, item, index) {
-                return Container(
-                  decoration: const BoxDecoration(
-                    border: Border(
-                      bottom: BorderSide(width: 1, color: Color(0xffe5e5e5)),
-                    ),
+    return PagingListener<int, Map<String, dynamic>>(
+      controller: _pagingController,
+      builder: (context, state, fetchNextPage) {
+        return PagedListView<int, Map<String, dynamic>>(
+          shrinkWrap: widget.isShrinkWrapped,
+          physics:
+              widget.isShrinkWrapped
+                  ? const NeverScrollableScrollPhysics()
+                  : const AlwaysScrollableScrollPhysics(),
+
+          state: state,
+          fetchNextPage: fetchNextPage,
+          builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
+            itemBuilder: (context, item, index) {
+              final bool isExpanded = selectedId == item['id'];
+              return Container(
+                decoration: const BoxDecoration(
+                  border: Border(
+                    bottom: BorderSide(width: 1, color: Color(0xffe5e5e5)),
                   ),
-                  child: Column(
-                    children: [
-                      ListTile(
-                        title: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
-                          children: [
-                            Expanded(flex: 3, child: Text(item['account'])),
-                            Expanded(
-                              flex: 3,
-                              child: Text(
-                                "${item['flow'] == '支出' ? '-' : ''}${item['detailed'].toString()}",
-                              ),
+                ),
+                child: Column(
+                  children: [
+                    ListTile(
+                      title: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          Expanded(flex: 3, child: Text(item['account'])),
+                          Expanded(
+                            flex: 3,
+                            child: Text(
+                              "${item['flow'] == '支出' ? '-' : ''}${item['detailed'].toString()}",
                             ),
-                            //Expanded(flex: 2, child: Text(item['flow'])),
-                            if (item['aim_account'] != null)
-                              Expanded(
-                                flex: 3,
-                                child: Text(item['aim_account']),
-                              ),
-                            if (item['category'] != null)
-                              Expanded(flex: 3, child: Text(item['category'])),
-                          ],
-                        ),
-                        subtitle: Row(
-                          children: [
-                            Text(
-                              "${item['flow'] == '转账' ? item['flow'] + '\n' : ''}${item['date'].substring(5)}",
-                            ),
-                            const Text(" "),
-                            if (item['comment'] != null &&
-                                item['comment'] != '')
-                              Text(
-                                '${item['flow'] == '转账' ? '\n' : ''}备注: ${item['comment']}',
-                              ),
-                          ],
-                        ),
-                        onTap: () {
-                          onItemPressed(item);
-                        },
+                          ),
+                          //Expanded(flex: 2, child: Text(item['flow'])),
+                          if (item['aim_account'] != null)
+                            Expanded(flex: 3, child: Text(item['aim_account'])),
+                          if (item['category'] != null)
+                            Expanded(flex: 3, child: Text(item['category'])),
+                        ],
                       ),
-                      if (selectedId == item['id'])
-                        ElevatedButton(
-                          onPressed: () {
-                            _showConfirmationDialog(item);
-                          },
-                          child: const Text('删除'),
-                        ),
-                    ],
-                  ),
-                );
-              },
-              noItemsFoundIndicatorBuilder: (context) {
-                return const Center(child: Text("尚无记录，添加一笔记录吧！"));
-              },
-            ),
-          );
-        },
-      ),
+                      subtitle: Row(
+                        children: [
+                          Text(
+                            "${item['flow'] == '转账' ? item['flow'] + '\n' : ''}${item['date'].substring(5)}",
+                          ),
+                          const Text(" "),
+                          if (item['comment'] != null && item['comment'] != '')
+                            Flexible(
+                              child: Text(
+                                '${item['flow'] == '转账' ? '\n' : ''}备注: ${item['comment']}',
+                                maxLines: isExpanded ? null : 1,
+                                overflow:
+                                    isExpanded ? null : TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                      ),
+                      onTap: () {
+                        onItemPressed(item);
+                      },
+                    ),
+                    if (selectedId == item['id'])
+                      ElevatedButton(
+                        onPressed: () {
+                          _showConfirmationDialog(item);
+                        },
+                        child: const Text('删除'),
+                      ),
+                  ],
+                ),
+              );
+            },
+            noItemsFoundIndicatorBuilder: (context) {
+              return const Center(child: Text("尚无记录，添加一笔记录吧！"));
+            },
+          ),
+        );
+      },
     );
   }
 

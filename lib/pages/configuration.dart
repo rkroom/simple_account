@@ -367,6 +367,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               trailing: Checkbox(
                 value: _notificationTaskChecked,
                 onChanged: (bool? checked) async {
+                  if (checked == true) {
+                    registerNotification();
+                  }
                   if (checked != null) {
                     await handleDailyNotificationToggle(checked);
                   }
@@ -392,6 +395,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               trailing: Checkbox(
                 value: _scheduleNotificationTaskChecked,
                 onChanged: (bool? checked) async {
+                  if (checked == true) {
+                    registerNotification();
+                  }
                   if (checked != null) {
                     await handleScheduleNotificationToggle(checked);
                   }

@@ -321,10 +321,10 @@ packages:
     dependency: "direct main"
     description:
       name: infinite_scroll_pagination
-      sha256: ff5232d9066f664d31eee1b7dd0dedf79c71e7d8874567a7af5a51630e38b234
+      sha256: "9b8f95362928a1de835658835194b435c40f2bfc386f6545c1fd706203df0cd4"
       url: "https://pub.dev"
     source: hosted
-    version: "5.0.0"
+    version: "5.1.0"
   intl:
     dependency: "direct main"
     description:
@@ -582,10 +582,10 @@ packages:
     dependency: "direct main"
     description:
       name: sqflite_sqlcipher
-      sha256: "16033fde6c7d7bd657b71a2bc42332ab02bc8001c3212f502d2e02714e735ec9"
+      sha256: edf10c7dc18e6bc4e9213c265d26856d303f0b0537174151d28c936b80f80bd0
       url: "https://pub.dev"
     source: hosted
-    version: "3.1.0+1"
+    version: "3.2.1"
   stack_trace:
     dependency: transitive
     description:
@@ -702,10 +702,10 @@ packages:
     dependency: "direct main"
     description:
       name: workmanager
-      sha256: f3c3ce6d79cce53eee4a29dd2e8328c25db5ba5d9062fcc5e8f3c71e0af9b7e4
+      sha256: "746a50c535af15b6dc225abbd9b52ab272bcd292c535a104c54b5bc02609c38a"
       url: "https://pub.dev"
     source: hosted
-    version: "0.6.0"
+    version: "0.7.0"
   xdg_directories:
     dependency: transitive
     description:

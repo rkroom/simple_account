@@ -206,3 +206,12 @@ Future<void> performInitialSetup() async {
   await WorkmanagerTool.setupAndScheduleTasks();
   ConfigService().setNotificationRegistered(true);
 }
+
+Future<void> registerNotification() async {
+  bool succeeded = await ConfigService().getNotificationRegistered();
+  if (!succeeded) {
+    await NotificationService().initNotification();
+    ConfigService().setNotificationRegistered(true);
+    return;
+  }
+}
