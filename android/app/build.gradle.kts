@@ -49,11 +49,18 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    packaging  {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
 }
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.google.errorprone:error_prone_annotations:2.38.0") // required by flutter_secure_storage
     implementation("com.github.spotbugs:spotbugs-annotations:4.9.3") // required by flutter_secure_storage
 //    implementation("androidx.work:work-runtime-ktx:2.9.1")

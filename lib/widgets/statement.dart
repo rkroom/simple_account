@@ -8,13 +8,20 @@ import '../tools/event_bus.dart';
 class StatementWidget extends StatefulWidget {
   final DateTime? startTime;
   final DateTime? endTime;
-
+  final String? accountParam;
+  final String? categoryParam;
+  final String? firstLevelCategoryParam;
+  final String? flowParam;
   final bool isShrinkWrapped;
 
   const StatementWidget({
     super.key,
     this.startTime,
     this.endTime,
+    this.accountParam,
+    this.categoryParam,
+    this.firstLevelCategoryParam,
+    this.flowParam,
     this.isShrinkWrapped = false,
   });
 
@@ -53,7 +60,11 @@ class StatementWidgetState extends State<StatementWidget> {
   void didUpdateWidget(StatementWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.startTime != oldWidget.startTime ||
-        widget.endTime != oldWidget.endTime) {
+        widget.endTime != oldWidget.endTime ||
+        widget.accountParam != oldWidget.accountParam ||
+        widget.categoryParam != oldWidget.categoryParam ||
+        widget.firstLevelCategoryParam != oldWidget.firstLevelCategoryParam ||
+        widget.flowParam != oldWidget.flowParam) {
       _pagingController.refresh();
     }
   }
@@ -64,6 +75,10 @@ class StatementWidgetState extends State<StatementWidget> {
       pageKey + 1,
       startTime: widget.startTime,
       endTime: widget.endTime,
+      accountID: widget.accountParam,
+      categoryID: widget.categoryParam,
+      firstLevelCategoryID: widget.firstLevelCategoryParam,
+      flowParam: widget.flowParam,
     );
   }
 

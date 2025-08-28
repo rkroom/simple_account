@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:infinite_scroll_pagination/infinite_scroll_pagination.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:simple_account/widgets/statement.dart';
 
 import '../tools/config_enum.dart';
 import '../tools/db.dart';
@@ -43,8 +44,6 @@ class AccountWidgetState extends State<AccountWidget>
     fetchPage: (pageKey) => _fetchPage(pageKey),
   );
 
-  final DatabaseHelper _databaseHelper = DatabaseHelper();
-
   double totalAssets = 0;
   double totalDebts = 0;
   double currentlyMonthConsume = 0;
@@ -81,6 +80,8 @@ class AccountWidgetState extends State<AccountWidget>
       ),
     ]);
 
+    if (!mounted) return;
+
     // 将结果更新到状态变量
     totalAssets = checkDBResult(results[0][0]["balance"]);
     totalDebts = checkDBResult(results[1][0]["balance"]);
@@ -106,53 +107,99 @@ class AccountWidgetState extends State<AccountWidget>
 
   // 转换为字符串并去除尾随零
   String formatNumber(double number) {
-    // 尝试将 number 转换为 int
-    if (number == number.toInt()) {
-      // 如果没有小数部分，转为 int
+    if (number.isInfinite || number.isNaN) return '0';
+    if (number % 1 == 0) {
       return number.toInt().toString();
-    } else {
-      // 如果有小数部分，保持原样
-      return number.toString();
     }
+    String s = number.toStringAsFixed(2);
+    if (s.contains('.')) {
+      s = s.replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+    }
+    return s;
   }
 
   void getFirstLevelConsume() {
     var cmd = currentlyMonthDays();
     DB().getFirstLevelConsumeAnalysis(cmd[0], cmd[1]).then((value) {
-      double total = 0;
+      final data = List<Map<String, dynamic>>.from(value);
 
-      for (var e in value) {
-        total = total + e['value'];
+      if (data.isEmpty) {
+        setState(() {});
+        return;
       }
-      var initialOffset = 0.2;
-      for (var e in value) {
-        Color color = getRandomColor();
-        colorAndName.add({
-          "color": color,
-          "name":
-              //"${e["name"]}(${((e["value"] / total) * 100).toStringAsFixed(2)}%)",
-              "${e["name"]}\n${formatNumber(e["value"])}",
-          "amount": e["value"],
-        });
-        var percent = (e["value"] / total);
-        var offset = 0.8;
-        if (percent <= 0.02) {
-          offset = initialOffset;
-          if (initialOffset <= 0.9) {
-            initialOffset = initialOffset + 0.35;
-          }
+
+      double total = data.fold(0.0, (sum, e) => sum + (e['value'] as double));
+      if (total == 0) {
+        pieChartSections.clear();
+        colorAndName.clear();
+        setState(() {});
+        return;
+      }
+
+      List<Map<String, dynamic>> processedData =
+          data.map((e) {
+            final currentValue = e['value'] as double;
+            return {
+              'id': e['id'],
+              'name': e['name'],
+              'value': currentValue,
+              'percent': currentValue / total,
+            };
+          }).toList();
+
+      final largeSlices =
+          processedData.where((d) => d['percent'] >= 0.05).toList();
+      final smallSlices =
+          processedData.where((d) => d['percent'] < 0.05).toList();
+
+      largeSlices.sort(
+        (a, b) => (b['value'] as double).compareTo(a['value'] as double),
+      );
+      smallSlices.sort(
+        (a, b) => (b['value'] as double).compareTo(a['value'] as double),
+      );
+
+      List<Map<String, dynamic>> interleavedSlices = [];
+      int i = 0, j = 0;
+      while (i < largeSlices.length || j < smallSlices.length) {
+        if (i < largeSlices.length) {
+          interleavedSlices.add(largeSlices[i++]);
         }
+        if (j < smallSlices.length) {
+          interleavedSlices.add(smallSlices[j++]);
+        }
+      }
+
+      pieChartSections.clear();
+      colorAndName.clear();
+
+      for (var e in interleavedSlices) {
+        final color = getRandomColor();
+        final currentValue = e['value'] as double;
+        final percent = e['percent'] as double;
+
         pieChartSections.add(
           PieChartSectionData(
             color: color,
-            value: e["value"],
-            title: "${(percent * 100).toStringAsFixed(2)}%",
-            titlePositionPercentageOffset: offset,
-            radius: 120,
+            value: currentValue,
+            title: '${(percent * 100).toStringAsFixed(1)}%',
+            radius: 100,
+            titleStyle: const TextStyle(fontSize: 12, color: Colors.black),
+            titlePositionPercentageOffset: 0.7,
           ),
         );
+
+        colorAndName.add({
+          "id": e["id"],
+          "color": color,
+          "name": "${e["name"]}\n${formatNumber(currentValue)}",
+          "amount": currentValue,
+          "categoryNameOnly": e["name"],
+        });
       }
+
       colorAndName.sort((a, b) => b['amount'].compareTo(a['amount']));
+
       setState(() {});
     });
   }
@@ -182,8 +229,7 @@ class AccountWidgetState extends State<AccountWidget>
 
   Future<List<Map<String, dynamic>>> _fetchPage(int pageKey) async {
     final offset = pageKey * _pageSize;
-    //final billDetails = await DB().getAccountInfo(_pageSize, offset);
-    return _databaseHelper.fetchData(_pageSize, offset);
+    return await DB().getAccountInfo(_pageSize, offset);
   }
 
   void onItemPressed(Map<String, dynamic> item) {
@@ -279,45 +325,66 @@ class AccountWidgetState extends State<AccountWidget>
   }
 
   Widget account() {
-    return Scaffold(
-      body: PagingListener<int, Map<String, dynamic>>(
-        controller: _pagingController,
-        builder: (context, state, fetchNextPage) {
-          return PagedListView<int, Map<String, dynamic>>(
-            state: state,
-            fetchNextPage: fetchNextPage,
-            builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
-              itemBuilder: (context, item, index) {
-                return Column(
-                  children: [
-                    ListTile(
-                      title: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+    return PagingListener<int, Map<String, dynamic>>(
+      controller: _pagingController,
+      builder: (context, state, fetchNextPage) {
+        return PagedListView<int, Map<String, dynamic>>(
+          state: state,
+          fetchNextPage: fetchNextPage,
+          builderDelegate: PagedChildBuilderDelegate<Map<String, dynamic>>(
+            itemBuilder: (context, item, index) {
+              return Column(
+                children: [
+                  ListTile(
+                    title: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Expanded(child: Text(item['name'])),
+                        Expanded(child: Text(item['type'])),
+                        Expanded(child: Text(item['balance'].toString())),
+                      ],
+                    ),
+                    //subtitle: Text('ID: ${item['id']}'),
+                    onTap: () {
+                      onItemPressed(item);
+                    },
+                  ),
+                  if (selectedId == item['id'])
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          Expanded(child: Text(item['name'])),
-                          Expanded(child: Text(item['type'])),
-                          Expanded(child: Text(item['balance'].toString())),
+                          ElevatedButton(
+                            onPressed: () {
+                              _showConfirmationDialog(item, index);
+                            },
+                            child: const Text('更名'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder:
+                                      (context) => AccountStatementPage(
+                                        accountName: item['name'],
+                                        accountID: item['id'].toString(),
+                                      ),
+                                ),
+                              );
+                            },
+                            child: const Text('详情'),
+                          ),
                         ],
                       ),
-                      //subtitle: Text('ID: ${item['id']}'),
-                      onTap: () {
-                        onItemPressed(item);
-                      },
                     ),
-                    if (selectedId == item['id'])
-                      ElevatedButton(
-                        onPressed: () {
-                          _showConfirmationDialog(item, index);
-                        },
-                        child: const Text('修改账户名'),
-                      ),
-                  ],
-                );
-              },
-            ),
-          );
-        },
-      ),
+                ],
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -348,68 +415,84 @@ class AccountWidgetState extends State<AccountWidget>
       );
     }
 
-    return Scaffold(
-      body: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          Wrap(
-            spacing: 5.0, // 水平方向的间距
-            runSpacing: 2.0, // 垂直方向的间距
-            children: [
-              if (totalAssets != 0.0) Text("总资产： $totalAssets"),
-              if (totalDebts != 0.0) Text("总负债： ${0 - totalDebts}"),
-              if ((totalAssets + totalDebts) != 0.0)
-                Text("净资产： ${(totalAssets + totalDebts).toStringAsFixed(2)}"),
-              if (previousMonthConsume != 0.0)
-                Text("上月支出： $previousMonthConsume"),
-              if (previousMonthIncome != 0.0)
-                Text("上月收支： $previousMonthIncome"),
-              if (currentlyMonthConsume != 0.0)
-                Text("本月支出： $currentlyMonthConsume"),
-              if (currentlyMonthIncome != 0.0)
-                Text("本月收入： $currentlyMonthIncome"),
-              if ((currentlyMonthIncome - currentlyMonthConsume) != 0.0)
-                Text(
-                  "本月总计： ${(currentlyMonthIncome - currentlyMonthConsume).toStringAsFixed(2)}",
-                ),
-              if (previousDayConsume != 0.0) Text("昨日支出： $previousDayConsume"),
-              if (currentlyDayConsume != 0.0)
-                Text("今日支出： $currentlyDayConsume"),
-            ],
-          ),
-          SizedBox(
-            height: deviceHeight * 0.37,
-            child: PieChart(
-              PieChartData(
-                centerSpaceRadius: 0,
-                sections: pieChartSections,
-                pieTouchData: PieTouchData(
-                  touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                    if (event is FlTapUpEvent) {
-                      final touchedIndex =
-                          pieTouchResponse
-                              ?.touchedSection
-                              ?.touchedSectionIndex ??
-                          -1;
-                      if (touchedIndex >= 0) {
-                        Navigator.pushNamed(context, "/statistic");
-                      }
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        Wrap(
+          spacing: 5.0, // 水平方向的间距
+          runSpacing: 2.0, // 垂直方向的间距
+          children: [
+            if (totalAssets != 0.0) Text("总资产： $totalAssets"),
+            if (totalDebts != 0.0) Text("总负债： ${0 - totalDebts}"),
+            if ((totalAssets + totalDebts) != 0.0)
+              Text("净资产： ${(totalAssets + totalDebts).toStringAsFixed(2)}"),
+            if (previousMonthConsume != 0.0)
+              Text("上月支出： $previousMonthConsume"),
+            if (previousMonthIncome != 0.0) Text("上月收支： $previousMonthIncome"),
+            if (currentlyMonthConsume != 0.0)
+              Text("本月支出： $currentlyMonthConsume"),
+            if (currentlyMonthIncome != 0.0)
+              Text("本月收入： $currentlyMonthIncome"),
+            if ((currentlyMonthIncome - currentlyMonthConsume) != 0.0)
+              Text(
+                "本月总计： ${(currentlyMonthIncome - currentlyMonthConsume).toStringAsFixed(2)}",
+              ),
+            if (previousDayConsume != 0.0) Text("昨日支出： $previousDayConsume"),
+            if (currentlyDayConsume != 0.0) Text("今日支出： $currentlyDayConsume"),
+          ],
+        ),
+        SizedBox(
+          height: deviceHeight * 0.37,
+          child: PieChart(
+            PieChartData(
+              centerSpaceRadius: 0,
+              sections: pieChartSections,
+              pieTouchData: PieTouchData(
+                touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                  if (event is FlTapUpEvent) {
+                    final touchedIndex =
+                        pieTouchResponse?.touchedSection?.touchedSectionIndex ??
+                        -1;
+                    if (touchedIndex >= 0) {
+                      Navigator.pushNamed(context, "/statistic");
                     }
-                  },
-                ),
+                  }
+                },
               ),
             ),
           ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 5.0),
-              child: GridView.count(
-                crossAxisCount: 3, // 每行的按钮数量，可以调整为你需要的数量
-                crossAxisSpacing: 8.0, // 横向间距
-                mainAxisSpacing: 8.0, // 纵向间距
-                childAspectRatio: 2.5, // 宽高比
-                children: List.generate(colorAndName.length, (index) {
-                  return Container(
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 5.0),
+            child: GridView.count(
+              crossAxisCount: 3,
+              crossAxisSpacing: 8.0,
+              mainAxisSpacing: 8.0,
+              childAspectRatio: 2.5,
+              children: List.generate(colorAndName.length, (index) {
+                return GestureDetector(
+                  onTap: () {
+                    final item = colorAndName[index];
+                    final categoryId = item['id'].toString();
+                    final categoryName = item['categoryNameOnly'];
+                    var cmd = currentlyMonthDays();
+                    final DateTime startTime = DateTime.parse(cmd[0]);
+                    final DateTime endTime = DateTime.parse(cmd[1]);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder:
+                            (context) => CategoryDetailsPage(
+                              startTime: startTime,
+                              endTime: endTime,
+                              categoryId: categoryId,
+                              categoryName: categoryName,
+                            ),
+                      ),
+                    );
+                  },
+                  child: Container(
                     alignment: Alignment.center,
                     padding: const EdgeInsets.all(1.0),
                     decoration: BoxDecoration(
@@ -417,31 +500,74 @@ class AccountWidgetState extends State<AccountWidget>
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      colorAndName[index]["name"], // 显示标签文本
+                      colorAndName[index]["name"],
                       style: const TextStyle(fontSize: 16),
                       textAlign: TextAlign.center,
                     ),
-                  );
-                }),
-              ),
+                  ),
+                );
+              }),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   @override
   void dispose() {
+    bus.off("update_account", _refreshAccount);
     _newAccountNameController.dispose();
     _pagingController.dispose();
     super.dispose();
-    bus.off("refresh_account", _refreshAccount);
   }
 }
 
-class DatabaseHelper {
-  Future<List<Map<String, dynamic>>> fetchData(int limit, int offset) async {
-    return await DB().getAccountInfo(limit, offset);
+class CategoryDetailsPage extends StatelessWidget {
+  final DateTime startTime;
+  final DateTime endTime;
+  final String categoryId;
+  final String categoryName;
+
+  const CategoryDetailsPage({
+    super.key,
+    required this.startTime,
+    required this.endTime,
+    required this.categoryId,
+    required this.categoryName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final String appBarTitle =
+        '$categoryName-${startTime.year}年${startTime.month}月';
+    return Scaffold(
+      appBar: AppBar(title: Text(appBarTitle)),
+      body: StatementWidget(
+        startTime: startTime,
+        endTime: endTime,
+        firstLevelCategoryParam: categoryId,
+        flowParam: 'consume',
+      ),
+    );
+  }
+}
+
+class AccountStatementPage extends StatelessWidget {
+  final String accountName;
+  final String accountID;
+
+  const AccountStatementPage({
+    super.key,
+    required this.accountName,
+    required this.accountID,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("$accountName-账单")),
+      body: StatementWidget(accountParam: accountID),
+    );
   }
 }

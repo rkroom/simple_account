@@ -20,9 +20,9 @@ class StatisticWidget extends StatefulWidget {
 class StatisticWidgetState extends State<StatisticWidget> {
   final Map<DateTime, List<double>> _events = {};
 
-  final DateTime _focusedDay = DateTime.now();
-  late DateTime _firstDayOfMonth;
+  late DateTime _focusedDay;
   late DateTime _lastDayOfMonth;
+
   bool _isLoading = true;
   String? _error;
   bool _isListView = false;
@@ -31,9 +31,13 @@ class StatisticWidgetState extends State<StatisticWidget> {
   @override
   void initState() {
     super.initState();
-    _firstDayOfMonth = DateTime(_focusedDay.year, _focusedDay.month, 1);
-    _lastDayOfMonth = DateTime(_focusedDay.year, _focusedDay.month + 1, 0);
+    _focusedDay = DateTime.now();
+    _updateMonthRange();
     _loadMonthlyTransactions();
+  }
+
+  void _updateMonthRange() {
+    _lastDayOfMonth = DateTime(_focusedDay.year, _focusedDay.month + 1, 0);
   }
 
   void _loadMonthlyTransactions() {
@@ -43,7 +47,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
     });
 
     DB()
-        .getMonthlyTransactions()
+        .getMonthlyTransactions(_focusedDay)
         .then((value) {
           if (!mounted) return;
           final newEvents = <DateTime, List<double>>{};
@@ -152,6 +156,8 @@ class StatisticWidgetState extends State<StatisticWidget> {
       endDay = _lastDayOfMonth.day;
     }
 
+    if (endDay == 0) return const SizedBox.shrink();
+
     final double interval = max(1, (endDay / 6).ceilToDouble());
 
     for (int i = 1; i <= endDay; i++) {
@@ -217,6 +223,10 @@ class StatisticWidgetState extends State<StatisticWidget> {
                     if (value > endDay) {
                       return Container();
                     }
+
+                    if (value != meta.max && meta.max - value < interval) {
+                      return Container();
+                    }
                     return SideTitleWidget(
                       meta: meta,
                       space: 10,
@@ -275,22 +285,38 @@ class StatisticWidgetState extends State<StatisticWidget> {
   }
 
   Widget _buildCalendarView() {
+    final double totalMonthlyExpense = _events.values
+        .expand((list) => list)
+        .fold(0.0, (sum, item) => sum + item);
+
     return Column(
       children: [
         TableCalendar<double>(
           daysOfWeekHeight: 20.0,
-          firstDay: _firstDayOfMonth,
-          lastDay: _lastDayOfMonth,
+          firstDay: DateTime.utc(2020, 1, 1),
+          lastDay: DateTime.utc(2030, 12, 31),
           focusedDay: _focusedDay,
           startingDayOfWeek: StartingDayOfWeek.monday,
           locale: 'zh_CN',
-          availableGestures: AvailableGestures.none,
+          // availableGestures: AvailableGestures.none,
           headerStyle: const HeaderStyle(
             formatButtonVisible: false,
-            leftChevronVisible: false,
-            rightChevronVisible: false,
+            leftChevronVisible: true,
+            rightChevronVisible: true,
             titleCentered: true,
           ),
+          onPageChanged: (focusedDay) {
+            if (_focusedDay.month != focusedDay.month ||
+                _focusedDay.year != focusedDay.year) {
+              setState(() {
+                _focusedDay = focusedDay;
+                _selectedDay = null;
+                _events.clear();
+                _updateMonthRange();
+              });
+              _loadMonthlyTransactions();
+            }
+          },
           daysOfWeekStyle: const DaysOfWeekStyle(
             weekdayStyle: TextStyle(fontSize: 13),
             weekendStyle: TextStyle(fontSize: 13),
@@ -321,6 +347,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
               return;
             }
             setState(() {
+              _focusedDay = focusedDay;
               if (isSameDay(_selectedDay, selectedDay)) {
                 _selectedDay = null;
               } else {
@@ -329,6 +356,19 @@ class StatisticWidgetState extends State<StatisticWidget> {
             });
           },
           calendarBuilders: CalendarBuilders(
+            headerTitleBuilder: (context, date) {
+              final title = DateFormat.yMMM('zh_CN').format(date);
+              final totalText = totalMonthlyExpense.toStringAsFixed(0);
+              return Center(
+                child: Text(
+                  '$title（$totalText）',
+                  style: const TextStyle(
+                    fontSize: 17.0,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              );
+            },
             dowBuilder: (context, day) {
               const dowText = {
                 1: '一',
@@ -403,7 +443,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
       );
     }
 
-    if (_events.isEmpty) {
+    if (_events.isEmpty && _isListView) {
       return const Center(
         child: Text(
           '暂无可展示记录',
@@ -419,7 +459,7 @@ class StatisticWidgetState extends State<StatisticWidget> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('本月支出'),
+        title: Text('${_focusedDay.year}年${_focusedDay.month}月支出'),
         actions: [
           IconButton(
             icon: Icon(_isListView ? Icons.calendar_today : Icons.view_list),

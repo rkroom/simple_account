@@ -215,3 +215,14 @@ Future<void> registerNotification() async {
     return;
   }
 }
+
+List<String> getMonthDateRange(DateTime date) {
+  DateTime firstDay = DateTime(date.year, date.month, 1);
+  DateTime lastDay = DateTime(date.year, date.month + 1, 0);
+  return [
+    formatDateTime(firstDay),
+    formatDateTime(
+      DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59),
+    ),
+  ];
+}

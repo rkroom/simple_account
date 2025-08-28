@@ -455,7 +455,7 @@ class ScheduleCard extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   DropdownButtonFormField<ScheduleStatus>(
-                    value: selectedStatus,
+                    initialValue: selectedStatus,
                     decoration: const InputDecoration(
                       labelText: '状态',
                       icon: Icon(Icons.flag_outlined),

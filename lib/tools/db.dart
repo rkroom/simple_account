@@ -180,19 +180,22 @@ class DB {
       """);
   }
 
-  Future<List> getMonthlyTransactions() async {
+  ///
+  ///[date] 待查询月份中的任意一天。
+  ///
+  Future<List> getMonthlyTransactions(DateTime date) async {
     var db = await database;
-    var cmd = currentlyMonthDays();
+    var dateRange = getMonthDateRange(date);
     return db.rawQuery(
       """
-      SELECT date(when_time) AS date, round(sum(detailed),2) AS amount
-      FROM books_account_book
-      WHERE when_time > ?
-      AND flow = ?
-      GROUP BY date
-      ORDER BY date
-      DESC""",
-      [cmd[0], "consume"],
+    SELECT date(when_time) AS date, round(sum(detailed),2) AS amount
+    FROM books_account_book
+    WHERE when_time BETWEEN ? AND ? 
+    AND flow = ?
+    GROUP BY date
+    ORDER BY date
+    DESC""",
+      [dateRange[0], dateRange[1], "consume"],
     );
   }
 
@@ -295,40 +298,61 @@ JOIN TopValues t on a.id = t.account_info_id""",
   }
 
   //账单列表
+  ///
+  /// [pageSize] 每页要检索的记录数。
+  /// [pageNum] 要获取的页码，从 1 开始。
+  /// [startTime] 可选参数：用于筛选账单的日期范围的开始时间。将包含此时间及之后的所有记录。
+  /// [endTime] 可选参数：用于筛选账单的日期范围的结束时间。将包含此时间及之前的所有记录。
+  /// [accountID] 可选参数：用于筛选的账户ID。它将匹配该账户作为来源 (`account_info_id`) 或目标 (`aim_account_id`) 的记录。
+  /// [categoryID] 可选参数：用于筛选的特定（二级）分类ID。**不能与 [firstLevelCategoryID] 同时使用**。
+  /// [firstLevelCategoryID] 可选参数：用于筛选的主（一级）分类ID。**不能与 [categoryID] 同时使用**。
+  /// [flowParam] 可选参数：用于筛选的交易流水类型 ('consume'-支出, 'income'-收入, 'transfer'-转账)。
+  ///
   Future<List<Map<String, dynamic>>> getBillDetails(
     int pageSize,
     int pageNum, {
     DateTime? startTime,
     DateTime? endTime,
+    String? accountID,
+    String? categoryID,
+    String? firstLevelCategoryID,
+    String? flowParam,
   }) async {
+    if (categoryID != null &&
+        categoryID.isNotEmpty &&
+        firstLevelCategoryID != null &&
+        firstLevelCategoryID.isNotEmpty) {
+      throw ArgumentError(
+        '不能同时使用 (categoryID) 和 (firstLevelCategoryID) 进行筛选。请只提供一个参数。',
+      );
+    }
     var db = await database;
 
     final StringBuffer sqlBuilder = StringBuffer("""
-    SELECT 
-      i.name AS account, 
-      b.account_info_id AS account_id,
-      CASE b.flow
-        WHEN 'consume' THEN '支出'
-        WHEN 'income' THEN '收入'
-        WHEN 'transfer' THEN '转账'
-      END AS flow,
-      i2.name AS aim_account, 
-      b.aim_account_id, 
-      s.specific_category AS category, 
-      b.comment,
-      strftime('%Y-%m-%d %H:%M', b.when_time) AS date, 
-      b.detailed, 
-      b.flow AS flowSign, 
-      b.id
-    FROM books_account_book AS b
-    LEFT JOIN books_account_info AS i ON b.account_info_id = i.id
-    LEFT JOIN books_account_info AS i2 ON b.aim_account_id = i2.id
-    LEFT JOIN books_account_category_specific AS s ON b.types_id = s.id
-  """);
+      SELECT
+        i.name AS account,
+        b.account_info_id AS account_id,
+        CASE b.flow
+          WHEN 'consume' THEN '支出'
+          WHEN 'income' THEN '收入'
+          WHEN 'transfer' THEN '转账'
+        END AS flow,
+        i2.name AS aim_account,
+        b.aim_account_id,
+        s.specific_category AS category,
+        b.comment,
+        strftime('%Y-%m-%d %H:%M', b.when_time) AS date,
+        b.detailed,
+        b.flow AS flowSign,
+        b.id
+      FROM books_account_book AS b
+      inner JOIN books_account_info AS i ON b.account_info_id = i.id
+      LEFT JOIN books_account_info AS i2 ON b.aim_account_id = i2.id
+      LEFT JOIN books_account_category_specific AS s ON b.types_id = s.id
+      """);
 
     List<String> whereConditions = [];
     List<dynamic> queryParams = [];
-
     final DateFormat formatter = DateFormat('yyyy-MM-dd HH:mm:ss');
 
     if (startTime != null) {
@@ -339,6 +363,27 @@ JOIN TopValues t on a.id = t.account_info_id""",
     if (endTime != null) {
       whereConditions.add("b.when_time <= ?");
       queryParams.add(formatter.format(endTime));
+    }
+
+    if (accountID != null && accountID.isNotEmpty && accountID != '%') {
+      whereConditions.add('(b.account_info_id = ? OR b.aim_account_id = ?)');
+      queryParams.add(accountID);
+      queryParams.add(accountID);
+    }
+
+    if (categoryID != null && categoryID.isNotEmpty) {
+      whereConditions.add('(b.types_id IS NOT NULL AND b.types_id = ?)');
+      queryParams.add(categoryID);
+    }
+
+    if (firstLevelCategoryID != null && firstLevelCategoryID.isNotEmpty) {
+      whereConditions.add("s.parent_category_id = ?");
+      queryParams.add(firstLevelCategoryID);
+    }
+
+    if (flowParam != null && flowParam.isNotEmpty) {
+      whereConditions.add('b.flow = ?');
+      queryParams.add(flowParam);
     }
 
     if (whereConditions.isNotEmpty) {
@@ -460,12 +505,27 @@ JOIN TopValues t on a.id = t.account_info_id""",
   }
 
   //根据时间获取一级分类消费情况
-  Future getFirstLevelConsumeAnalysis(querydateStart, querydateEnd) async {
+  ///
+  /// [querydateStart] 起始时间。
+  /// [querydateEnd] 结束时间。
+  ///
+  Future getFirstLevelConsumeAnalysis(
+    String querydateStart,
+    String querydateEnd,
+  ) async {
     var db = await database;
     return db.rawQuery(
-      """SELECT round(sum(b.detailed),2) as value,f.first_level as name FROM books_account_book as b left JOIN 
-           books_account_category_specific as s on b.types_id = s.id LEFT JOIN books_account_category_first as f on s.parent_category_id = f.id 
-           WHERE flow='consume' AND when_time >= ? AND when_time <= ? GROUP BY parent_category_id""",
+      """
+      SELECT 
+        f.id, 
+        round(sum(b.detailed), 2) as value,
+        f.first_level as name 
+      FROM books_account_book as b 
+      LEFT JOIN books_account_category_specific as s on b.types_id = s.id 
+      LEFT JOIN books_account_category_first as f on s.parent_category_id = f.id 
+      WHERE flow = 'consume' AND when_time >= ? AND when_time <= ? 
+      GROUP BY f.id, f.first_level
+      """,
       [querydateStart, querydateEnd],
     );
   }

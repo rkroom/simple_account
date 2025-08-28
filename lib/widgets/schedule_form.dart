@@ -257,7 +257,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<ScheduleCycle>(
-              value: _selectedRound,
+              initialValue: _selectedRound,
               decoration: const InputDecoration(
                 labelText: '周期',
                 border: OutlineInputBorder(),
@@ -278,7 +278,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
                 child: DropdownButtonFormField<int>(
-                  value: _selectedDay,
+                  initialValue: _selectedDay,
                   decoration: const InputDecoration(
                     labelText: '日期',
                     border: OutlineInputBorder(),
