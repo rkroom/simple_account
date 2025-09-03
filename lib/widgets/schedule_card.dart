@@ -673,7 +673,6 @@ class ScheduleCard extends StatelessWidget {
 
     return FutureBuilder<dynamic>(
       future: DB().getHandleInfo(item.id),
-
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const SizedBox.shrink();
@@ -684,14 +683,6 @@ class ScheduleCard extends StatelessWidget {
         }
 
         final history = snapshot.data as List<dynamic>;
-
-        final handledDates =
-            history
-                .map(
-                  (e) => DateTime.tryParse(e['handledate']?.toString() ?? ''),
-                )
-                .whereType<DateTime>()
-                .toList();
 
         final currentDueDate = DateTime.tryParse(item.date);
         if (currentDueDate == null) return const SizedBox.shrink();
@@ -710,9 +701,30 @@ class ScheduleCard extends StatelessWidget {
           return const SizedBox.shrink();
         }
 
-        final bool wasCompletedInPeriod = handledDates.any(
+        final normalizedHandledDates =
+            history
+                .map(
+                  (e) => DateTime.tryParse(e['handledate']?.toString() ?? ''),
+                )
+                .whereType<DateTime>()
+                .map((d) => DateTime.utc(d.year, d.month, d.day))
+                .toList();
+
+        final normalizedPrevDate = DateTime.utc(
+          previousDueDate.year,
+          previousDueDate.month,
+          previousDueDate.day,
+        );
+        final normalizedPrevPrevDate = DateTime.utc(
+          previousPreviousDueDate.year,
+          previousPreviousDueDate.month,
+          previousPreviousDueDate.day,
+        );
+
+        final bool wasCompletedInPeriod = normalizedHandledDates.any(
           (d) =>
-              d.isAfter(previousPreviousDueDate) && d.isBefore(previousDueDate),
+              d.isAfter(normalizedPrevPrevDate) &&
+              !d.isAfter(normalizedPrevDate),
         );
 
         if (!wasCompletedInPeriod) {

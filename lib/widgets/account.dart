@@ -182,7 +182,8 @@ class AccountWidgetState extends State<AccountWidget>
           PieChartSectionData(
             color: color,
             value: currentValue,
-            title: '${(percent * 100).toStringAsFixed(1)}%',
+            title:
+                percent < 0.01 ? '' : '${(percent * 100).toStringAsFixed(1)}%',
             radius: 100,
             titleStyle: const TextStyle(fontSize: 12, color: Colors.black),
             titlePositionPercentageOffset: 0.7,
