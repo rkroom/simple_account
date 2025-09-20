@@ -164,6 +164,26 @@ class ConfigService {
     return box.put("scheduleNotificationTaskTime", time);
   }
 
+  Future<bool> getSavedAccConfig() async {
+    var box = await _box;
+    return box.get("accConfig", defaultValue: false);
+  }
+
+  Future<void> setSavedAccConfig(bool hasSaved) async {
+    var box = await _box;
+    return box.put("accConfig", hasSaved);
+  }
+
+  Future<bool> getSavedNlConfig() async {
+    var box = await _box;
+    return box.get("nlConfig", defaultValue: false);
+  }
+
+  Future<void> setSavedNlConfig(bool hasSaved) async {
+    var box = await _box;
+    return box.put("nlConfig", hasSaved);
+  }
+
   Future<bool> resetSettings() async {
     var box = await _box;
     try {
@@ -171,6 +191,8 @@ class ConfigService {
       await box.delete("notificationTaskTime");
       await box.delete("ScheduleNotificationTaskStatus");
       await box.delete("scheduleNotificationTaskTime");
+      await box.delete("accConfig");
+      await box.delete("nlConfig");
       return true;
     } catch (e) {
       //debugPrint(e.toString());

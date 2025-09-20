@@ -45,12 +45,20 @@ class BillListenerService {
 
   Future<Bill> handlerBillString(String notificationString) async {
     Map<String, dynamic> notification = jsonDecode(notificationString);
-    // 提取参数
     final String packageName = notification['packageName'];
     final String content = notification['content'] as String? ?? 'empty';
     final String title = notification['title'];
     final int postTime = notification['postTime'];
-    return await convertToBill(packageName, content, title, postTime);
+    final String payment = notification['payment'] as String? ?? 'empty';
+    final String appName = notification['appName'] as String? ?? 'Unknown';
+    return await convertToBill(
+      packageName,
+      content,
+      title,
+      postTime,
+      payment,
+      appName,
+    );
   }
 
   Future<Bill> convertToBill(
@@ -58,6 +66,8 @@ class BillListenerService {
     String content,
     String title,
     int postTime,
+    payment,
+    appName,
   ) async {
     // 匹配正则表达式
     RegExpMatch? match;
@@ -70,6 +80,7 @@ class BillListenerService {
     final bill = Bill(
       detailed: match?.group(0),
       time: DateTime.fromMillisecondsSinceEpoch(postTime),
+      source: appName,
     );
     return bill;
   }

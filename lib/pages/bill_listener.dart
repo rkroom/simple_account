@@ -98,7 +98,33 @@ class BillListenerWidgetState extends State<BillListenerWidget>
         actions: [
           IconButton(
             icon: const Icon(Icons.delete),
-            onPressed: _clearNotifications,
+            onPressed: () {
+              if (notifications.isEmpty) return;
+              showDialog(
+                context: context,
+                builder: (BuildContext context) {
+                  return AlertDialog(
+                    title: const Text('确认操作'),
+                    content: const Text('确定要清空所有记录吗？'),
+                    actions: <Widget>[
+                      TextButton(
+                        child: const Text('取消'),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                        },
+                      ),
+                      TextButton(
+                        child: const Text('确定'),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _clearNotifications();
+                        },
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
           ),
         ],
       ),
@@ -167,6 +193,17 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                             notifications.removeAt(index);
                           });
                         },
+                      ),
+                    ),
+                    Positioned(
+                      bottom: 30.0,
+                      right: 12.0,
+                      child: Text(
+                        billItem.source ?? '',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12.0,
+                        ),
                       ),
                     ),
                   ],

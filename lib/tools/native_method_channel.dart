@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 class NativeMethodChannel {
@@ -80,31 +83,8 @@ class NativeMethodChannel {
     await _channel.invokeMethod('removeConfig', {'key': key});
   }
 
-  Future<int?> clearAllConfig() async {
-    final result = await _channel.invokeMethod<int?>('clearAllConfig');
-    return result;
-  }
-
-  Future<void> putConfigList(
-    String key,
-    List<Map<String, dynamic>> value,
-  ) async {
-    await _channel.invokeMethod('putConfigList', {'key': key, 'value': value});
-  }
-
-  Future<List<Map<String, dynamic>>?> getConfigList(String key) async {
-    final result = await _channel.invokeMethod<List<dynamic>?>(
-      'getConfigList',
-      {'key': key},
-    );
-    if (result == null) return null;
-    try {
-      return result
-          .map((item) => Map<String, dynamic>.from(item as Map))
-          .toList();
-    } catch (e) {
-      return null;
-    }
+  Future<void> clearAllConfig() async {
+    await _channel.invokeMethod('clearAllConfig');
   }
 
   Future<List<Map<String, dynamic>>?> getAbAllowPackageConfig() async {
@@ -162,6 +142,46 @@ class NativeMethodChannel {
       await _channel.invokeMethod('putAllowKeywords', {'keywords': keywords});
     } catch (e) {
       //
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getExtractionRules() async {
+    try {
+      // 1. 调用原生方法，现在期望返回一个JSON字符串
+      final String? rulesJsonString = await _channel.invokeMethod<String>(
+        'getExtractionRules',
+      );
+
+      // 2. 如果返回的字符串为空，则返回一个空列表
+      if (rulesJsonString == null || rulesJsonString.isEmpty) {
+        return [];
+      }
+
+      // 3. 使用 dart:convert 解码JSON字符串
+      final List<dynamic> decodedList = jsonDecode(rulesJsonString);
+
+      // 4. 将解码后的列表转换为期望的类型 List<Map<String, dynamic>>
+      return decodedList
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+    } on PlatformException catch (e) {
+      debugPrint('Failed to get extraction rules: ${e.message}');
+      return [];
+    } catch (e) {
+      debugPrint(
+        'An unexpected error occurred while parsing extraction rules: $e',
+      );
+      return [];
+    }
+  }
+
+  Future<void> putExtractionRules(List<Map<String, dynamic>> rules) async {
+    try {
+      final String jsonString = jsonEncode(rules);
+      await _channel.invokeMethod('putExtractionRules', {'rules': jsonString});
+    } catch (e) {
+      debugPrint('Failed to put extraction rules: $e');
+      // 可以根据需要处理异常
     }
   }
 }

@@ -1,12 +1,19 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:simple_account/tools/config_service.dart';
-import 'package:simple_account/tools/entity.dart';
-import 'package:simple_account/tools/native_method_channel.dart';
-import 'package:simple_account/tools/tools.dart';
-import 'package:simple_account/tools/workmanager_tool.dart';
+
 import '../tools/config.dart';
+import '../tools/config_service.dart';
+import '../tools/entity.dart';
+import '../tools/native_method_channel.dart';
+import '../tools/tools.dart';
+import '../tools/workmanager_tool.dart';
+import '../widgets/app_selection_screen.dart';
 
 class ConfigurationWidget extends StatefulWidget {
   const ConfigurationWidget({super.key});
@@ -23,6 +30,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   bool _notificationTaskChecked = false;
   bool _scheduleNotificationTaskChecked = false;
   bool _isLoading = true;
+  bool _savedAccConfig = false;
+  bool _savedNlConfig = false;
 
   int _taskHour = 0;
   int _taskMinute = 0;
@@ -55,6 +64,21 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     }
   }
 
+  Future<void> _navigateToAppSelection(ConfigType configType) async {
+    try {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => AppSelectionScreen(configType: configType),
+        ),
+      );
+      _initializePermissionsAndTime();
+    } catch (e) {
+      if (!mounted) return;
+      showNoticeSnackBar(context, '无法获取应用列表，请检查应用权限。错误: $e');
+    }
+  }
+
   Future<void> _initializePermissionsAndTime() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
@@ -66,6 +90,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               .checkNotificationListenerPermission();
       PermissionStatus status = await Permission.notification.status;
       final postNoti = status == PermissionStatus.granted;
+
+      final savedAcc = await ConfigService().getSavedAccConfig();
+      final savedNl = await ConfigService().getSavedNlConfig();
 
       // 每日任务
       final taskStatus = await ConfigService().getNotificationTaskStatus();
@@ -83,15 +110,17 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
           await NativeMethodChannel.instance.getNlAllowPackageConfig();
 
       final List<PackageConfig> abPackages =
-          rawAbData!.map((data) => PackageConfig.fromJson(data)).toList();
+          rawAbData?.map((data) => PackageConfig.fromJson(data)).toList() ?? [];
       final List<PackageConfig> nlPackages =
-          rawNlData!.map((data) => PackageConfig.fromJson(data)).toList();
+          rawNlData?.map((data) => PackageConfig.fromJson(data)).toList() ?? [];
 
       if (!mounted) return;
       setState(() {
         _accessibilityChecked = acc;
         _notificationChecked = noti;
         _postNotificationChecked = postNoti;
+        _savedAccConfig = savedAcc;
+        _savedNlConfig = savedNl;
 
         _notificationTaskChecked = taskStatus;
         _taskHour = savedTime['hour']!;
@@ -179,7 +208,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
   String _getSubtitleText(List<PackageConfig> packages) {
     if (packages.isEmpty) {
-      return '未配置允许的应用';
+      return '未配置应用';
     }
     final allowedAppNames =
         packages
@@ -239,6 +268,155 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     }
   }
 
+  Future<void> _handleExportSettings() async {
+    final confirmExport = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('导出配置'),
+          content: const Text('您要将当前的自动服务配置导出为一个 JSON 文件吗？'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('取消'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            TextButton(
+              child: const Text('导出'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmExport != true) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final abConfig =
+          await NativeMethodChannel.instance.getAbAllowPackageConfig() ?? [];
+      final nlConfig =
+          await NativeMethodChannel.instance.getNlAllowPackageConfig() ?? [];
+      final keywords =
+          await NativeMethodChannel.instance.getAllowKeywords() ?? [];
+      final rules = await NativeMethodChannel.instance.getExtractionRules();
+
+      final allConfigs = {
+        'abPackageConfig': abConfig,
+        'nlPackageConfig': nlConfig,
+        'nlKeywords': keywords,
+        'extractionRules': rules,
+      };
+
+      const jsonEncoder = JsonEncoder.withIndent('  ');
+      final jsonString = jsonEncoder.convert(allConfigs);
+
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final fileName = 'config_$timestamp.json';
+
+      final savedPath = await NativeMethodChannel.instance
+          .exportJsonToDownloads(jsonString, fileName);
+
+      if (mounted) {
+        showNoticeSnackBar(context, '配置已成功导出到: $savedPath');
+      }
+    } catch (e) {
+      if (mounted) {
+        showNoticeSnackBar(context, '导出配置失败: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _handleImportSettings() async {
+    final confirmImport = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('导入配置'),
+          content: const Text('您确定要导入配置文件吗？此操作将清空并覆盖您当前的自动服务设置。'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('取消'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            TextButton(
+              child: const Text('确定导入'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmImport != true) return;
+
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null && result.files.single.path != null) {
+        setState(() => _isLoading = true);
+        final filePath = result.files.single.path!;
+        final file = File(filePath);
+        final jsonString = await file.readAsString();
+        final decodedJson = jsonDecode(jsonString) as Map<String, dynamic>;
+
+        final abConfigRaw = decodedJson['abPackageConfig'];
+        final nlConfigRaw = decodedJson['nlPackageConfig'];
+        final keywordsRaw = decodedJson['nlKeywords'];
+        final rulesRaw = decodedJson['extractionRules'];
+
+        if (abConfigRaw is! List ||
+            nlConfigRaw is! List ||
+            keywordsRaw is! List ||
+            (rulesRaw != null && rulesRaw is! List)) {
+          throw Exception('配置文件格式无效。');
+        }
+
+        final abConfig =
+            (abConfigRaw)
+                .map((item) => Map<String, dynamic>.from(item as Map))
+                .toList();
+        final nlConfig =
+            (nlConfigRaw)
+                .map((item) => Map<String, dynamic>.from(item as Map))
+                .toList();
+        final keywords = (keywordsRaw).map((item) => item.toString()).toList();
+        final rules =
+            (rulesRaw as List<dynamic>?)
+                ?.map((item) => Map<String, dynamic>.from(item as Map))
+                .toList() ??
+            [];
+
+        await NativeMethodChannel.instance.clearAllConfig();
+        await NativeMethodChannel.instance.putAbAllowPackageConfig(abConfig);
+        await NativeMethodChannel.instance.putNlAllowPackageConfig(nlConfig);
+        await NativeMethodChannel.instance.putAllowKeywords(keywords);
+        await NativeMethodChannel.instance.putExtractionRules(rules);
+
+        if (mounted) {
+          showNoticeSnackBar(context, '配置已成功导入');
+          await _initializePermissionsAndTime();
+        }
+      } else {
+        if (mounted) {
+          showNoticeSnackBar(context, '未选择文件');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        showNoticeSnackBar(context, '导入配置失败: $e');
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
   Future<void> handleDailyNotificationToggle(bool newCheckedState) async {
     await ConfigService().setNotificationTaskStatus(newCheckedState);
     if (newCheckedState) {
@@ -268,6 +446,15 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
   @override
   Widget build(BuildContext context) {
+    final String abSubtitle =
+        _savedAccConfig
+            ? _getSubtitleText(_abAllowedPackages)
+            : '预设：${_getSubtitleText(_abAllowedPackages)}';
+
+    final String nlSubtitle =
+        _savedNlConfig
+            ? _getSubtitleText(_nlAllowedPackages)
+            : '预设：${_getSubtitleText(_nlAllowedPackages)}';
     if (_isLoading) {
       return Scaffold(
         appBar: AppBar(title: const Text('配置')),
@@ -283,9 +470,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         '${_scheduleTaskHour.toString().padLeft(2, '0')}:'
         '${_scheduleTaskMinute.toString().padLeft(2, '0')}:'
         '${_scheduleTaskSecond.toString().padLeft(2, '0')}';
-
-    final String abSubtitle = _getSubtitleText(_abAllowedPackages);
-    final String nlSubtitle = _getSubtitleText(_nlAllowedPackages);
 
     return Scaffold(
       appBar: AppBar(title: const Text('配置')),
@@ -309,14 +493,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,
               ),
-              onTap: () async {
-                await Navigator.of(context).pushNamed(
-                  '/billListenerConfig',
-                  arguments: {'config': 'acc'},
-                );
-                if (mounted) {
-                  _initializePermissionsAndTime();
-                }
+              onTap: () {
+                _navigateToAppSelection(ConfigType.acc);
               },
             ),
             ListTile(
@@ -336,14 +514,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,
               ),
-              onTap: () async {
-                await Navigator.of(context).pushNamed(
-                  '/billListenerConfig',
-                  arguments: {'config': 'noti'},
-                );
-                if (mounted) {
-                  _initializePermissionsAndTime();
-                }
+              onTap: () {
+                _navigateToAppSelection(ConfigType.nl);
               },
             ),
             ListTile(
@@ -425,16 +597,37 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
                 horizontal: 16.0,
                 vertical: 20.0,
               ),
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  minimumSize: const Size.fromHeight(50),
-                ),
-                onPressed: _handleResetSettings,
-                child: const Text(
-                  '重置自动服务设置',
-                  style: TextStyle(color: Colors.white),
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      minimumSize: const Size.fromHeight(50),
+                    ),
+                    onPressed: _handleResetSettings,
+                    child: const Text(
+                      '重置自动服务设置',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                    ),
+                    onPressed: _handleImportSettings,
+                    child: const Text('导入配置文件'),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                    ),
+                    onPressed: _handleExportSettings,
+                    child: const Text('导出配置文件'),
+                  ),
+                ],
               ),
             ),
           ],

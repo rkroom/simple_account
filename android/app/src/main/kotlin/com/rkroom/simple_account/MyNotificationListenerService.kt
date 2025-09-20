@@ -9,98 +9,82 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationManagerCompat
 import java.lang.ref.WeakReference
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class MyNotificationListenerService : NotificationListenerService() {
 
-    private val sharedPreferencesManager by lazy { SharedPreferencesManager.getInstance(this) }
-    private val configPreferencesManager by lazy { ConfigPreferencesManager.getInstance(this) }
-
-    private lateinit var cachedAllowPackageName: List<String>
-    private lateinit var cachedAllowKeywords: List<String>
+    private val billManager by lazy { BillDataStoreManager.getInstance(this) }
+    private val configManager by lazy { ConfigDataStoreManager.getInstance(this) }
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var cachedAllowPackageName: List<String>? = null
+    @Volatile private var cachedAllowKeywords: List<String>? = null
     private val staticRegExp = Regex("(\\d+\\.\\d{2})")
 
     fun refreshCachedConfig() {
-        loadAndCacheConfig()
+        serviceScope.launch { loadAndCacheConfig() }
     }
 
-    private fun loadAndCacheConfig() {
+    private suspend fun loadAndCacheConfig() {
         cachedAllowPackageName =
-                configPreferencesManager.getNlAllowPackageConfig().filter { it.isAllowed }.map {
+                configManager.getNlAllowPackageConfig().filter { it.isAllowed }.map {
                     it.packageName
                 }
-        cachedAllowKeywords = configPreferencesManager.getAllowKeywords()
+        cachedAllowKeywords = configManager.getAllowKeywords()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
-
-        val notification = sbn.notification
-        if (notification != null) {
-            val title = notification.extras.getString(Notification.EXTRA_TITLE)
-            val content = notification.extras.getString(Notification.EXTRA_TEXT)
-            val packageName = sbn.packageName
-            val postTime = sbn.postTime
-
-            if (!::cachedAllowPackageName.isInitialized || !::cachedAllowKeywords.isInitialized) {
-                loadAndCacheConfig()
-                if (!::cachedAllowPackageName.isInitialized || !::cachedAllowKeywords.isInitialized
-                ) {
-                    return
+        serviceScope.launch {
+            val notification = sbn.notification
+            if (notification != null) {
+                val title = notification.extras.getString(Notification.EXTRA_TITLE)
+                val content = notification.extras.getString(Notification.EXTRA_TEXT)
+                val packageName = sbn.packageName
+                val postTime = sbn.postTime
+                if (cachedAllowPackageName == null || cachedAllowKeywords == null) {
+                    loadAndCacheConfig()
                 }
+                handleNotification(title, content, packageName, postTime)
             }
-
-            handleNotification(title, content, packageName, postTime)
         }
     }
 
-    private fun saveNotificationData(
+    private suspend fun saveNotificationData(
             title: String?,
             content: String?,
             packageName: String?,
             postTime: Long?
     ) {
+        val appName = AppUtils.getAppName(applicationContext, packageName)
         val notificationData =
-                billData(
+                BillData(
                         title = title,
                         content = content,
                         packageName = packageName,
                         postTime = postTime,
-                        payment = null
+                        payment = null,
+                        appName = appName
                 )
-
-        val jsonString = Json.encodeToString(notificationData)
-
-        sharedPreferencesManager.addBill(jsonString)
-
-        // 发送账单，以便在打开bill_listener页面时也能及时添加新的账单
-        // 在需要的情况下
-        // 可以调用isAppRunning检查应用的运行情况
-        // 同时设置一个标志位（isSendNotification）,在进入bill_listener时修改其状态，退出时还原状态
-        // 在两者同时满足的情况下才发送账单
-        /*
-        channel?.invokeMethod("onNotificationPosted", mapOf(
-            "title" to title,
-            "content" to content,
-            "packageName" to packageName,
-            "postTime" to postTime,
-        ))
-        */
+        BillingRepository.saveBill(applicationContext, notificationData)
     }
 
-    private fun handleNotification(
+    private suspend fun handleNotification(
             title: String?,
             content: String?,
             packageName: String?,
             postTime: Long?
     ) {
+        val localPackageCache = cachedAllowPackageName ?: return
+        val localKeywordsCache = cachedAllowKeywords ?: return
 
-        if (!cachedAllowPackageName.contains(packageName)) {
+        if (!localPackageCache.contains(packageName)) {
             return
         }
 
-        if (!cachedAllowKeywords.any { title?.contains(it, ignoreCase = true) == true }) {
+        if (!localKeywordsCache.any { title?.contains(it, ignoreCase = true) == true }) {
             return
         }
 
@@ -113,7 +97,7 @@ class MyNotificationListenerService : NotificationListenerService() {
 
     override fun onCreate() {
         super.onCreate()
-        loadAndCacheConfig()
+        serviceScope.launch { loadAndCacheConfig() }
     }
 
     override fun onDestroy() {
@@ -124,14 +108,18 @@ class MyNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         Companion.setActiveInstance(this)
-        loadAndCacheConfig()
+        serviceScope.launch { loadAndCacheConfig() }
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         Companion.clearActiveInstance(this)
         val componentName = ComponentName(this, MyNotificationListenerService::class.java)
-        requestRebind(componentName)
+        try {
+            requestRebind(componentName)
+        } catch (e: Exception) {
+            // 在某些系统版本上可能会有异常，进行保护
+        }
     }
 
     companion object {
@@ -159,25 +147,15 @@ class MyNotificationListenerService : NotificationListenerService() {
             if (serviceInstance != null) {
                 if (Looper.myLooper() == Looper.getMainLooper()) {
                     serviceInstance.refreshCachedConfig()
-                    // Log.d("NotificationListener", "已在主线程直接刷新缓存。")
                 } else {
-                    Handler(Looper.getMainLooper()).post {
-                        serviceInstance.refreshCachedConfig()
-                        // Log.d("NotificationListener", "已将缓存刷新任务提交到主线程。")
-                    }
+                    Handler(Looper.getMainLooper()).post { serviceInstance.refreshCachedConfig() }
                 }
-            } else {
-                // Log.d("NotificationListener", "未找到活动的 MyNotificationListenerService
-                // 实例以通知配置更改...")
             }
         }
 
-        // var isSendNotification: Boolean = false
-
         fun isNotificationListenerEnabled(context: Context): Boolean {
-            val packageName = context.packageName
             val enabledPackages = NotificationManagerCompat.getEnabledListenerPackages(context)
-            return enabledPackages.contains(packageName)
+            return enabledPackages.contains(context.packageName)
         }
     }
 }

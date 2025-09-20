@@ -43,6 +43,7 @@ class Bill {
   List<int>? selectedCategory;
   String categoryText;
   int? categoryId;
+  String? source;
 
   Bill({
     this.detailed,
@@ -52,6 +53,7 @@ class Bill {
     this.selectedCategory,
     this.categoryText = "请选择",
     this.categoryId,
+    this.source,
   });
 
   factory Bill.fromMap(Map<String, dynamic> map, String id) {
@@ -63,9 +65,13 @@ class Bill {
               ? map['time']
               : DateTime.fromMillisecondsSinceEpoch(map['time'] ?? 0),
       accountText: map['consumeAccountText'],
-      selectedCategory: map['selectedCategory'],
+      selectedCategory:
+          map['selectedCategory'] != null
+              ? List<int>.from(map['selectedCategory'])
+              : null,
       categoryText: map['consumeCategoryText'] ?? "请选择",
       categoryId: map['categoryId'],
+      source: map['source'],
     );
   }
 
@@ -78,6 +84,7 @@ class Bill {
       'selectedCategory': selectedCategory,
       'consumeCategoryText': categoryText,
       'categoryId': categoryId,
+      'source': source,
     };
   }
 }

@@ -6,12 +6,20 @@ import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.Process
 import android.provider.MediaStore
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import timber.log.Timber
 
 fun createDownloadUri(context: Context, fileName: String, mimeType: String): Uri? {
     val contentValues =
@@ -87,32 +95,68 @@ fun convertToPackageConfigItems(rawValue: List<Map<String, Any?>>): List<Package
 }
 
 @Serializable
-data class billData(
+data class BillData(
         val title: String?,
         val content: String?,
         val packageName: String?,
         val postTime: Long?,
-        val payment: String?
+        val payment: String?,
+        val appName: String?
 )
 
 object AppConstants {
     const val UNKNOWN_PACKAGE = "UnknownPackage" // 未知包名常量
     const val UNKNOWN_CLASS = "UnknownClass" // 未知类名常量
+}
 
-    const val PACKAGE_JD = "com.jingdong.app.mall"
-    const val PACKAGE_ALIPAY = "com.eg.android.AlipayGphone"
-    const val PACKAGE_WECHAT = "com.tencent.mm"
+data class PageIdentifier(val packageName: String, val className: String) {
+    override fun toString(): String {
+        return "$packageName/$className"
+    }
+}
 
-    const val KEYWORD_PAYMENT_SUCCESS = "支付成功"
-    const val KEYWORD_TRANSACTION_METHOD_ALIPAY_1 = "交易方式" // 支付宝特定关键字
-    const val KEYWORD_TRANSACTION_METHOD_ALIPAY_2 = "付款方式"
-    const val CURRENCY_SYMBOL_CNY = "￥" // 人民币符号
+object AppUtils {
 
-    const val ACTIVITY_JD_CASHIER_COMPLETE = "CashierUserContentCompleteActivity"
-    // com.alipay.android.msp.ui.views.MspContainerActivity
-    const val ACTIVITY_ALIPAY_MSP_CONTAINER = "MspContainerActivity"
-    // 该页面金额动态显示，如需获取，需要监听TYPE_WINDOW_CONTENT_CHANGED
-    const val ACTIVITY_ALIPAY_NRESPAGE =
-            "com.alipay.android.phone.businesscommon.ucdp.nfc.activity.NResPageActivity"
-    const val ACTIVITY_WECHAT_UIPAGEFRAGMENT = "com.tencent.mm.framework.app.UIPageFragmentActivity"
+    private val appNameCache = ConcurrentHashMap<String, String>()
+
+    /**
+     * 根据包名获取应用程序的名称
+     *
+     * @param context 上下文对象，用于获取 PackageManager
+     * @param packageName 应用程序的包名
+     * @return 应用程序的名称，如果找不到则返回包名本身
+     */
+    fun getAppName(context: Context, packageName: String?): String {
+        if (packageName.isNullOrBlank()) {
+            return "Unknown" // 对空或空白的包名进行处理
+        }
+
+        return appNameCache.computeIfAbsent(packageName) { key ->
+            try {
+                val pm = context.applicationContext.packageManager
+                val appInfo = pm.getApplicationInfo(key, 0)
+                pm.getApplicationLabel(appInfo).toString()
+            } catch (e: PackageManager.NameNotFoundException) {
+                key
+            }
+        }
+    }
+}
+
+object BillingRepository {
+
+    private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun saveBill(context: Context, billData: BillData) {
+        repositoryScope.launch {
+            try {
+                val jsonString = json.encodeToString(billData)
+                BillDataStoreManager.getInstance(context).addBill(jsonString)
+                Timber.i("BillingRepository: 成功保存一条账单数据。")
+            } catch (e: Exception) {
+                Timber.e(e, "BillingRepository: 保存账单数据失败。")
+            }
+        }
+    }
 }
