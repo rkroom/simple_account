@@ -61,372 +61,601 @@ class ScheduleCard extends StatelessWidget {
     }
   }
 
+  Future<bool?> _showEditHandleDialog(
+    BuildContext context,
+    Map<String, dynamic> record,
+  ) {
+    final int recordId = record['id'];
+    final String initialDateStr = record['handledate'] ?? '';
+    final String initialComment = record['comment'] ?? '';
+    final formatter = DateFormat('yyyy-MM-dd');
+
+    DateTime selectedDate = DateTime.tryParse(initialDateStr) ?? DateTime.now();
+    final dateController = TextEditingController(
+      text: formatter.format(selectedDate),
+    );
+    final commentController = TextEditingController(text: initialComment);
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('编辑记录'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: dateController,
+                decoration: const InputDecoration(
+                  labelText: '日期',
+                  icon: Icon(Icons.calendar_today),
+                ),
+                readOnly: true,
+                onTap: () {
+                  DatePicker.showDatePicker(
+                    context,
+                    showTitleActions: true,
+                    onConfirm: (date) {
+                      selectedDate = date;
+                      dateController.text = formatter.format(selectedDate);
+                    },
+                    currentTime: selectedDate,
+                    locale: LocaleType.zh,
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: commentController,
+                decoration: const InputDecoration(
+                  labelText: '备注',
+                  hintText: '请输入备注信息',
+                  icon: Icon(Icons.comment_outlined),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: const Text('取消'),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+            ),
+            ElevatedButton(
+              child: const Text('保存'),
+              onPressed: () async {
+                final String newDate = dateController.text;
+                final String newComment = commentController.text;
+                Navigator.of(dialogContext);
+                try {
+                  await DB().updateScheduleRecord(
+                    recordId,
+                    newDate,
+                    newComment,
+                  );
+                  if (context.mounted) {
+                    Navigator.of(dialogContext).pop(true);
+                    showNoticeSnackBar(context, '记录更新成功!');
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    showNoticeSnackBar(context, '更新失败: $e');
+                  }
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _showDetailsDialog(BuildContext context) {
     final cycleText = _formatCycle(item);
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          title: Text(item.content),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter dialogSetState) {
+            return AlertDialog(
+              title: Text(item.content),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '当前状态: ',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                    InkWell(
-                      onTap: () {
-                        Navigator.of(dialogContext).pop();
-                        _showStatusUpdateDialog(context);
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2.0),
-                        child: Text(
-                          item.status.label,
+                    Row(
+                      children: [
+                        Text(
+                          '当前状态: ',
                           style: TextStyle(
                             fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).primaryColor,
-                            decoration: TextDecoration.underline,
+                            color: Colors.grey.shade700,
                           ),
                         ),
+                        InkWell(
+                          onTap: () {
+                            Navigator.of(dialogContext).pop();
+                            _showStatusUpdateDialog(context);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Text(
+                              item.status.label,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).primaryColor,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.info_outline, size: 20),
+                      title: Text('创建于: ${_formatDate(item.created)}'),
+                    ),
+                    if (item.finished != null && item.finished!.isNotEmpty)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.info_outline, size: 20),
+                        title: Text('结束于: ${item.finished}'),
                       ),
+                    if (cycleText.isNotEmpty)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.repeat_rounded, size: 20),
+                        title: Text('周期: $cycleText'),
+                      ),
+                    _buildMissedTaskWarning(),
+                    FutureBuilder(
+                      future: DB().getHandleInfo(item.id),
+                      builder: (context, AsyncSnapshot<dynamic> snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text('读取历史记录出错: ${snapshot.error}'),
+                          );
+                        }
+                        final history = snapshot.data as List?;
+                        final handledDates =
+                            (history)
+                                ?.map(
+                                  (e) => DateTime.tryParse(
+                                    e['handledate']?.toString() ?? '',
+                                  ),
+                                )
+                                .whereType<DateTime>()
+                                .map(
+                                  (d) => DateTime.utc(d.year, d.month, d.day),
+                                )
+                                .toSet() ??
+                            {};
+                        final nextDate = DateTime.tryParse(item.date);
+                        final normalizedNextDate =
+                            nextDate != null
+                                ? DateTime.utc(
+                                  nextDate.year,
+                                  nextDate.month,
+                                  nextDate.day,
+                                )
+                                : null;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (item.cycleValue == ScheduleCycle.day ||
+                                item.cycleValue == ScheduleCycle.week)
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                  top: 8.0,
+                                  bottom: 8.0,
+                                ),
+                                child: TableCalendar(
+                                  locale: 'zh_CN',
+                                  daysOfWeekHeight: 22.0,
+                                  rowHeight: 30.0,
+                                  firstDay: DateTime.utc(2010, 1, 1),
+                                  lastDay: DateTime.utc(2030, 12, 31),
+                                  focusedDay:
+                                      normalizedNextDate ?? DateTime.now(),
+                                  calendarFormat: CalendarFormat.month,
+                                  headerStyle: const HeaderStyle(
+                                    titleCentered: true,
+                                    formatButtonVisible: false,
+                                  ),
+                                  calendarBuilders: CalendarBuilders(
+                                    dowBuilder: (context, day) {
+                                      const dowText = {
+                                        1: '一',
+                                        2: '二',
+                                        3: '三',
+                                        4: '四',
+                                        5: '五',
+                                        6: '六',
+                                        7: '日',
+                                      };
+                                      return Center(
+                                        child: Text(
+                                          dowText[day.weekday]!,
+                                          style: const TextStyle(
+                                            fontSize: 12.0,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    defaultBuilder: (context, day, focusedDay) {
+                                      final normalizedDay = DateTime.utc(
+                                        day.year,
+                                        day.month,
+                                        day.day,
+                                      );
+                                      if (handledDates.contains(
+                                        normalizedDay,
+                                      )) {
+                                        return Container(
+                                          margin: const EdgeInsets.all(3.0),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: Colors.green.shade200,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Text(
+                                            day.day.toString(),
+                                            style: const TextStyle(
+                                              color: Colors.black87,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      if (normalizedDay == normalizedNextDate) {
+                                        return Container(
+                                          margin: const EdgeInsets.all(3.0),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: Colors.yellow.shade400,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Text(
+                                            day.day.toString(),
+                                            style: const TextStyle(
+                                              color: Colors.black87,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      return null;
+                                    },
+                                    todayBuilder: (context, day, focusedDay) {
+                                      final normalizedDay = DateTime.utc(
+                                        day.year,
+                                        day.month,
+                                        day.day,
+                                      );
+                                      Color? bgColor;
+                                      if (handledDates.contains(
+                                        normalizedDay,
+                                      )) {
+                                        bgColor = Colors.green.shade200;
+                                      } else if (normalizedDay ==
+                                          normalizedNextDate) {
+                                        bgColor = Colors.yellow.shade400;
+                                      }
+
+                                      if (bgColor != null) {
+                                        return Container(
+                                          margin: const EdgeInsets.all(3.0),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: bgColor,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color:
+                                                  Theme.of(
+                                                    context,
+                                                  ).primaryColor,
+                                              width: 2,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            day.day.toString(),
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.black87,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      return null;
+                                    },
+                                    outsideBuilder: (context, day, focusedDay) {
+                                      final normalizedDay = DateTime.utc(
+                                        day.year,
+                                        day.month,
+                                        day.day,
+                                      );
+                                      Color? bgColor;
+                                      if (handledDates.contains(
+                                        normalizedDay,
+                                      )) {
+                                        bgColor = Colors.green.shade100;
+                                      } else if (normalizedDay ==
+                                          normalizedNextDate) {
+                                        bgColor = Colors.yellow.shade200;
+                                      }
+
+                                      if (bgColor != null) {
+                                        return Container(
+                                          margin: const EdgeInsets.all(3.0),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: bgColor,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Text(
+                                            day.day.toString(),
+                                            style: TextStyle(
+                                              color: Colors.grey.shade500,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                              ),
+                            if (history == null || history.isEmpty)
+                              const SizedBox.shrink()
+                            else
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Divider(),
+                                  const Text(
+                                    '历史记录',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ListView.builder(
+                                    shrinkWrap: true,
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    itemCount: history.length,
+                                    itemBuilder: (context, index) {
+                                      final record = history[index];
+                                      final String? comment =
+                                          record['comment']?.toString();
+                                      final bool hasComment =
+                                          comment != null && comment.isNotEmpty;
+                                      final int recordId = record['id'];
+
+                                      return Card(
+                                        margin: const EdgeInsets.symmetric(
+                                          vertical: 2.0,
+                                        ),
+                                        child: ListTile(
+                                          title: Text(
+                                            '日期: ${record['handledate']}',
+                                          ),
+                                          subtitle:
+                                              hasComment
+                                                  ? Text('备注: $comment')
+                                                  : null,
+                                          onLongPress: () async {
+                                            final String? action =
+                                                await showDialog<String>(
+                                                  context: context,
+                                                  builder: (
+                                                    BuildContext menuContext,
+                                                  ) {
+                                                    return SimpleDialog(
+                                                      title: const Text('选择操作'),
+                                                      children: <Widget>[
+                                                        SimpleDialogOption(
+                                                          onPressed: () {
+                                                            Navigator.pop(
+                                                              menuContext,
+                                                              'edit',
+                                                            );
+                                                          },
+                                                          child: const Text(
+                                                            '编辑',
+                                                          ),
+                                                        ),
+                                                        SimpleDialogOption(
+                                                          onPressed: () {
+                                                            Navigator.pop(
+                                                              menuContext,
+                                                              'delete',
+                                                            );
+                                                          },
+                                                          child: const Text(
+                                                            '删除',
+                                                            style: TextStyle(
+                                                              color: Colors.red,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    );
+                                                  },
+                                                );
+                                            if (!context.mounted) return;
+                                            if (action == 'edit') {
+                                              final bool? updated =
+                                                  await _showEditHandleDialog(
+                                                    context,
+                                                    record,
+                                                  );
+                                              if (updated == true) {
+                                                dialogSetState(() {}); // 刷新对话框
+                                                onDataRefreshed(); // 刷新主屏幕
+                                              }
+                                            } else if (action == 'delete') {
+                                              final bool?
+                                              confirmDelete = await showDialog<
+                                                bool
+                                              >(
+                                                context: context,
+                                                builder: (
+                                                  BuildContext confirmCtx,
+                                                ) {
+                                                  return AlertDialog(
+                                                    title: const Text('确认删除记录'),
+                                                    content: Text(
+                                                      '您确定要删除这条于 ${record['handledate']} 的记录吗？',
+                                                    ),
+                                                    actions: [
+                                                      TextButton(
+                                                        child: const Text('取消'),
+                                                        onPressed:
+                                                            () => Navigator.of(
+                                                              confirmCtx,
+                                                            ).pop(false),
+                                                      ),
+                                                      TextButton(
+                                                        style:
+                                                            TextButton.styleFrom(
+                                                              foregroundColor:
+                                                                  Colors.red,
+                                                            ),
+                                                        child: const Text('删除'),
+                                                        onPressed:
+                                                            () => Navigator.of(
+                                                              confirmCtx,
+                                                            ).pop(true),
+                                                      ),
+                                                    ],
+                                                  );
+                                                },
+                                              );
+                                              if (confirmDelete == true) {
+                                                try {
+                                                  await DB()
+                                                      .deleteScheduleRecord(
+                                                        recordId,
+                                                      );
+                                                  if (context.mounted) {
+                                                    showNoticeSnackBar(
+                                                      context,
+                                                      '记录已删除',
+                                                    );
+                                                    dialogSetState(
+                                                      () {},
+                                                    ); // 刷新对话框
+                                                    onDataRefreshed(); // 刷新主屏幕
+                                                  }
+                                                } catch (e) {
+                                                  if (context.mounted) {
+                                                    showNoticeSnackBar(
+                                                      context,
+                                                      '删除失败: $e',
+                                                    );
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          },
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                          ],
+                        );
+                      },
                     ),
                   ],
                 ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.info_outline, size: 20),
-                  title: Text('创建于: ${_formatDate(item.created)}'),
-                ),
-                if (item.finished != null && item.finished!.isNotEmpty)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.info_outline, size: 20),
-                    title: Text('结束于: ${item.finished}'),
-                  ),
-                if (cycleText.isNotEmpty)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.repeat_rounded, size: 20),
-                    title: Text('周期: $cycleText'),
-                  ),
-                _buildMissedTaskWarning(),
-                FutureBuilder(
-                  future: DB().getHandleInfo(item.id),
-                  builder: (context, AsyncSnapshot<dynamic> snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    if (snapshot.hasError) {
-                      return Center(child: Text('读取历史记录出错: ${snapshot.error}'));
-                    }
-                    final history = snapshot.data as List?;
-                    final handledDates =
-                        (history)
-                            ?.map(
-                              (e) => DateTime.tryParse(
-                                e['handledate']?.toString() ?? '',
-                              ),
-                            )
-                            .whereType<DateTime>()
-                            .map((d) => DateTime.utc(d.year, d.month, d.day))
-                            .toSet() ??
-                        {};
-                    final nextDate = DateTime.tryParse(item.date);
-                    final normalizedNextDate =
-                        nextDate != null
-                            ? DateTime.utc(
-                              nextDate.year,
-                              nextDate.month,
-                              nextDate.day,
-                            )
-                            : null;
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (item.cycleValue == ScheduleCycle.day ||
-                            item.cycleValue == ScheduleCycle.week)
-                          Padding(
-                            padding: const EdgeInsets.only(
-                              top: 8.0,
-                              bottom: 8.0,
-                            ),
-                            child: TableCalendar(
-                              locale: 'zh_CN',
-                              daysOfWeekHeight: 22.0,
-                              rowHeight: 30.0,
-                              firstDay: DateTime.utc(2010, 1, 1),
-                              lastDay: DateTime.utc(2030, 12, 31),
-                              focusedDay: normalizedNextDate ?? DateTime.now(),
-                              calendarFormat: CalendarFormat.month,
-                              headerStyle: const HeaderStyle(
-                                titleCentered: true,
-                                formatButtonVisible: false,
-                              ),
-                              calendarBuilders: CalendarBuilders(
-                                dowBuilder: (context, day) {
-                                  const dowText = {
-                                    1: '一',
-                                    2: '二',
-                                    3: '三',
-                                    4: '四',
-                                    5: '五',
-                                    6: '六',
-                                    7: '日',
-                                  };
-                                  return Center(
-                                    child: Text(
-                                      dowText[day.weekday]!,
-                                      style: const TextStyle(fontSize: 12.0),
-                                    ),
-                                  );
-                                },
-                                defaultBuilder: (context, day, focusedDay) {
-                                  final normalizedDay = DateTime.utc(
-                                    day.year,
-                                    day.month,
-                                    day.day,
-                                  );
-                                  if (handledDates.contains(normalizedDay)) {
-                                    return Container(
-                                      margin: const EdgeInsets.all(3.0),
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: Colors.green.shade200,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Text(
-                                        day.day.toString(),
-                                        style: const TextStyle(
-                                          color: Colors.black87,
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  if (normalizedDay == normalizedNextDate) {
-                                    return Container(
-                                      margin: const EdgeInsets.all(3.0),
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: Colors.yellow.shade400,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Text(
-                                        day.day.toString(),
-                                        style: const TextStyle(
-                                          color: Colors.black87,
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  return null;
-                                },
-                                todayBuilder: (context, day, focusedDay) {
-                                  final normalizedDay = DateTime.utc(
-                                    day.year,
-                                    day.month,
-                                    day.day,
-                                  );
-                                  Color? bgColor;
-                                  if (handledDates.contains(normalizedDay)) {
-                                    bgColor = Colors.green.shade200;
-                                  } else if (normalizedDay ==
-                                      normalizedNextDate) {
-                                    bgColor = Colors.yellow.shade400;
-                                  }
-
-                                  if (bgColor != null) {
-                                    return Container(
-                                      margin: const EdgeInsets.all(3.0),
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: bgColor,
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: Theme.of(context).primaryColor,
-                                          width: 2,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        day.day.toString(),
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.black87,
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  return null;
-                                },
-                                outsideBuilder: (context, day, focusedDay) {
-                                  final normalizedDay = DateTime.utc(
-                                    day.year,
-                                    day.month,
-                                    day.day,
-                                  );
-                                  Color? bgColor;
-                                  if (handledDates.contains(normalizedDay)) {
-                                    bgColor = Colors.green.shade100;
-                                  } else if (normalizedDay ==
-                                      normalizedNextDate) {
-                                    bgColor = Colors.yellow.shade200;
-                                  }
-
-                                  if (bgColor != null) {
-                                    return Container(
-                                      margin: const EdgeInsets.all(3.0),
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: bgColor,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Text(
-                                        day.day.toString(),
-                                        style: TextStyle(
-                                          color: Colors.grey.shade500,
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  return null;
-                                },
-                              ),
-                            ),
-                          ),
-                        if (history == null || history.isEmpty)
-                          const SizedBox.shrink()
-                        else
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Divider(),
-                              const Text(
-                                '历史记录',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              ListView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount: history.length,
-                                itemBuilder: (context, index) {
-                                  final record = history[index];
-                                  final String? comment =
-                                      record['comment']?.toString();
-                                  final bool hasComment =
-                                      comment != null && comment.isNotEmpty;
-
-                                  return Card(
-                                    margin: const EdgeInsets.symmetric(
-                                      vertical: 2.0,
-                                    ),
-                                    child: ListTile(
-                                      title: Text(
-                                        '日期: ${record['handledate']}',
-                                      ),
-                                      subtitle:
-                                          hasComment
-                                              ? Text('备注: $comment')
-                                              : null,
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                      ],
+              ),
+              actions: [
+                TextButton(
+                  child: const Text('编辑'),
+                  onPressed: () async {
+                    Navigator.of(dialogContext).pop();
+                    final result = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => EditScheduleWidget(item: item),
+                      ),
                     );
+                    if (result == true) {
+                      onDataRefreshed();
+                    }
+                  },
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('删除'),
+                  onPressed: () async {
+                    final dialogNavigator = Navigator.of(context);
+                    final bool? confirmDelete = await showDialog<bool>(
+                      context: dialogContext,
+                      builder: (BuildContext confirmationDialogContext) {
+                        return AlertDialog(
+                          title: const Text('确认删除'),
+                          content: Text(
+                            '您确定要删除以下计划吗？该操作无法撤销！\n【 ${item.content} 】',
+                          ),
+                          actions: [
+                            TextButton(
+                              child: const Text('取消'),
+                              onPressed:
+                                  () => Navigator.of(
+                                    confirmationDialogContext,
+                                  ).pop(false),
+                            ),
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('删除'),
+                              onPressed:
+                                  () => Navigator.of(
+                                    confirmationDialogContext,
+                                  ).pop(true),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmDelete == true) {
+                      try {
+                        await DB().deleteSchedule(item.id);
+                        if (context.mounted) {
+                          dialogNavigator.pop();
+                          showNoticeSnackBar(context, '计划已删除');
+                          onDataRefreshed();
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          showNoticeSnackBar(context, '删除失败: $e');
+                        }
+                      }
+                    }
+                  },
+                ),
+                TextButton(
+                  child: const Text('关闭'),
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
                   },
                 ),
               ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              child: const Text('编辑'),
-              onPressed: () async {
-                Navigator.of(dialogContext).pop();
-                final result = await Navigator.push<bool>(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => EditScheduleWidget(item: item),
-                  ),
-                );
-                if (result == true) {
-                  onDataRefreshed();
-                }
-              },
-            ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('删除'),
-              onPressed: () async {
-                final dialogNavigator = Navigator.of(context);
-                final bool? confirmDelete = await showDialog<bool>(
-                  context: dialogContext,
-                  builder: (BuildContext confirmationDialogContext) {
-                    return AlertDialog(
-                      title: const Text('确认删除'),
-                      content: Text(
-                        '您确定要删除以下计划吗？该操作无法撤销！\n【 ${item.content} 】',
-                      ),
-                      actions: [
-                        TextButton(
-                          child: const Text('取消'),
-                          onPressed:
-                              () => Navigator.of(
-                                confirmationDialogContext,
-                              ).pop(false),
-                        ),
-                        TextButton(
-                          style: TextButton.styleFrom(
-                            foregroundColor: Colors.red,
-                          ),
-                          child: const Text('删除'),
-                          onPressed:
-                              () => Navigator.of(
-                                confirmationDialogContext,
-                              ).pop(true),
-                        ),
-                      ],
-                    );
-                  },
-                );
-                if (confirmDelete == true) {
-                  try {
-                    await DB().deleteSchedule(item.id);
-                    if (context.mounted) {
-                      dialogNavigator.pop();
-                      showNoticeSnackBar(context, '计划已删除');
-                      onDataRefreshed();
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      showNoticeSnackBar(context, '删除失败: $e');
-                    }
-                  }
-                }
-              },
-            ),
-            TextButton(
-              child: const Text('关闭'),
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-              },
-            ),
-          ],
+            );
+          },
         );
       },
     );
@@ -746,7 +975,6 @@ class ScheduleCard extends StatelessWidget {
             ),
           );
         }
-
         return const SizedBox.shrink();
       },
     );

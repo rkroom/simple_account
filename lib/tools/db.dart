@@ -118,7 +118,7 @@ class DB {
   Future getHandleInfo(id) async {
     var db = await database;
     return db.rawQuery(
-      "select strftime('%Y-%m-%d',handledate) as handledate,comment from schemes_handle_info where project_id = ? order by handledate DESC",
+      "select id,strftime('%Y-%m-%d',handledate) as handledate,comment from schemes_handle_info where project_id = ? order by handledate DESC",
       [id],
     );
   }
@@ -137,6 +137,25 @@ class DB {
       "INSERT INTO schemes_handle_info(project_id,handledate,comment) values (?,?,?)",
       [id, finshedDate, handleComment],
     );
+  }
+
+  Future<void> updateScheduleRecord(
+    int id,
+    String handledate,
+    String comment,
+  ) async {
+    final db = await database;
+    await db.update(
+      'schemes_handle_info',
+      {'handledate': handledate, 'comment': comment},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteScheduleRecord(int id) async {
+    final db = await database;
+    await db.delete('schemes_handle_info', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> addSchedule(Map<String, dynamic> scheduleData) async {
