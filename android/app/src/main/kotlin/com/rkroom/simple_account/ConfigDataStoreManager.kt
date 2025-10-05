@@ -157,6 +157,7 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                         isAllowed = true
                                 )
                         )
+                // 默认关键字
                 private val DEFAULT_NL_KEYWORDS: List<String> = listOf("交易", "支付")
                 // 默认提取规则
                 private val DEFAULT_AB_EXTRACTION_RULES: List<ExtractionRule> =
@@ -166,7 +167,7 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                         ruleName = "JD Payment Success",
                                         packageName = "com.jingdong.app.mall",
                                         activityName =
-                                                "com.jd.cashier.app.view.CashierUserContentCompleteActivity",
+                                                "com.jingdong.app.mall.bundle.cashierfinish.view.CashierUserContentCompleteActivity",
                                         contentRules =
                                                 listOf(
                                                         RuleDetail(
@@ -301,6 +302,29 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                                 ),
                                         paymentRules = emptyList(),
                                         triggerOnEmptyNodes = true
+                                ),
+                                // 规则 6: 淘宝闪购下单成功页面
+                                ExtractionRule(
+                                        ruleName = "Taobao Flash Shopping",
+                                        packageName = "com.taobao.taobao",
+                                        activityName =
+                                                "com.taobao.themis.container.app.TMSActivity",
+                                        contentRules =
+                                                listOf(
+                                                        RuleDetail(
+                                                                keywords = listOf("下单成功"),
+                                                                strategy =
+                                                                        SimpleOffset(
+                                                                                offset = 0,
+                                                                                useExactMatch =
+                                                                                        false
+                                                                        )
+                                                        )
+                                                ),
+                                        paymentRules = emptyList(),
+                                        continueOnContentFailure = false,
+                                        triggerOnEmptyNodes = false,
+                                        preFilterByKeywords = true
                                 )
                         )
 
