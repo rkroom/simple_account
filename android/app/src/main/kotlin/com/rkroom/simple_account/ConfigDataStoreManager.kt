@@ -142,7 +142,12 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                         packageName = "com.taobao.taobao",
                                         appName = "淘宝",
                                         isAllowed = true
-                                )
+                                ),
+                                PackageConfigItem(
+                                        packageName = "com.tmall.wireless",
+                                        appName = "天猫",
+                                        isAllowed = true
+                                ),
                         )
                 private val DEFAULT_NL_PACKAGES_CONFIG: List<PackageConfigItem> =
                         listOf(
@@ -313,6 +318,29 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                                 listOf(
                                                         RuleDetail(
                                                                 keywords = listOf("下单成功"),
+                                                                strategy =
+                                                                        SimpleOffset(
+                                                                                offset = 0,
+                                                                                useExactMatch =
+                                                                                        false
+                                                                        )
+                                                        )
+                                                ),
+                                        paymentRules = emptyList(),
+                                        continueOnContentFailure = false,
+                                        triggerOnEmptyNodes = false,
+                                        preFilterByKeywords = true
+                                ),
+                                // 规则 7: 天猫
+                                ExtractionRule(
+                                        ruleName = "Tmall",
+                                        packageName = "com.tmall.wireless",
+                                        activityName =
+                                                "com.tmall.wireless.pay.TMPaySuccessActivity",
+                                        contentRules =
+                                                listOf(
+                                                        RuleDetail(
+                                                                keywords = listOf("支付成功"),
                                                                 strategy =
                                                                         SimpleOffset(
                                                                                 offset = 0,
