@@ -69,20 +69,19 @@ object Extractor {
             ruleDetail: RuleDetail,
             isLastRule: Boolean
     ): String? {
-        // 无关键字规则，直接应用策略
         if (ruleDetail.keywords.isEmpty()) {
-            Timber.d("应用无关键字规则，策略: ${ruleDetail.strategy::class.simpleName}")
-            // 对于无关键字规则，keywordIndex 传 -1，因为策略计算偏移量时不需要基准点
-            return applyStrategy(nodes, -1, ruleDetail.strategy)
+            return applyAbsoluteExtraction(nodes, ruleDetail.strategy)
         }
 
         val strategy = ruleDetail.strategy
         val useExactMatch = if (strategy is SimpleOffset) strategy.useExactMatch else false
-        val keywordsSet = ruleDetail.keywords.toSet()
+        val keywordsSet = ruleDetail.keywordsSet
+
         Timber.d(
                 "在 ${nodes.size} 个节点中搜索 ${keywordsSet.size} 个关键字 (精确匹配: $useExactMatch)，策略: ${strategy::class.simpleName}"
         )
         /*
+        需缓存正则规则
         val regex = ruleDetail.combinedKeywordsRegex
         if (regex != null) {
             for ((idx, node) in nodes.withIndex()) {
@@ -95,8 +94,8 @@ object Extractor {
             }
         }
         */
-
         for ((idx, node) in nodes.withIndex()) {
+            // 查找匹配的关键字
             val matchedKeyword =
                     keywordsSet.firstOrNull { keyword ->
                         if (useExactMatch) {
@@ -109,21 +108,18 @@ object Extractor {
             if (matchedKeyword != null) {
                 Timber.d("在索引 $idx 处找到关键字 '$matchedKeyword'。应用策略...")
 
-                // 应用提取策略
+                // 应用提取策略 (相对定位：以 idx 为基准)
                 val extractedText = applyStrategy(nodes, idx, strategy)
 
                 if (extractedText != null) {
-                    // 策略应用成功，立即返回提取到的文本
                     Timber.d("策略应用成功，提取文本: '$extractedText'")
                     return extractedText
                 } else {
-                    // 策略应用失败，根据 isLastRule 决定返回值
+                    // 策略应用失败后的回退处理
                     if (isLastRule) {
-                        // 如果是最后一条规则，并且策略失败了，就按要求返回关键字本身
-                        Timber.d("找到关键字 '$matchedKeyword'，但策略应用失败。由于这是最后一条规则，按要求返回关键字本身。")
+                        Timber.d("找到关键字 '$matchedKeyword'，但策略应用失败。作为兜底返回关键字本身。")
                         return matchedKeyword
                     } else {
-                        // 如果不是最后一条，返回 null 以便上层继续尝试下一个回退规则
                         Timber.d("找到关键字 '$matchedKeyword'，但策略应用失败。继续尝试下一条规则...")
                         return null
                     }
@@ -131,9 +127,24 @@ object Extractor {
             }
         }
 
-        // 如果遍历完所有节点都没有匹配到任何关键字，则返回 null
         Timber.d("遍历完所有节点后，未找到任何关键字。")
         return null
+    }
+
+    /** 处理无关键字的提取规则 (绝对定位模式) 将基准索引设为 0，使得 offset 代表列表中的绝对位置。 */
+    private fun applyAbsoluteExtraction(
+            nodes: List<NodeData>,
+            strategy: ExtractionStrategy
+    ): String? {
+        Timber.d("应用绝对定位规则 (无关键字)，策略: ${strategy::class.simpleName}")
+
+        // 如果节点列表为空，直接返回 null，防止后续处理异常
+        if (nodes.isEmpty()) {
+            Timber.d("节点列表为空，无法进行绝对定位提取。")
+            return null
+        }
+
+        return applyStrategy(nodes, 0, strategy)
     }
 
     /** 根据不同的策略执行提取操作 */

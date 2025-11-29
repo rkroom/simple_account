@@ -3,11 +3,14 @@ package com.rkroom.simple_account
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.flutter.BuildConfig
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.SerialName
@@ -23,6 +26,21 @@ private val Context.configDataStore: DataStore<Preferences> by
 
 @Serializable
 data class PackageConfigItem(val packageName: String, val appName: String, val isAllowed: Boolean)
+/** 辅助功能服务配置 */
+data class ServiceConfig(
+        val allowedPackageNames: Set<String>,
+        val extractionRules: Map<String, List<ExtractionRule>>,
+        val transactionCooldownMs: Long,
+        val windowChangeDebounceMs: Long,
+        val contentChangeDebounceMs: Long,
+        val isContentChangeEnabled: Boolean
+)
+
+/** 通知监听服务配置 */
+data class NotificationConfig(
+        val allowedPackages: Set<String>, // 使用 Set 优化查找
+        val keywords: List<String>
+)
 
 /** 提取策略的密封接口 */
 @Serializable sealed interface ExtractionStrategy
@@ -67,7 +85,11 @@ data class Literal(val text: String) : ConcatPart // 静态文本
 data class NodeText(val offset: Int) : ConcatPart // 动态节点文本
 
 /** 包含了关键字和具体执行策略的详细规则 */
-@Serializable data class RuleDetail(val keywords: List<String>, val strategy: ExtractionStrategy)
+@Serializable
+data class RuleDetail(val keywords: List<String>, val strategy: ExtractionStrategy) {
+        // 使用 lazy 缓存 Set，避免每次提取时重复创建
+        val keywordsSet: Set<String> by lazy(LazyThreadSafetyMode.PUBLICATION) { keywords.toSet() }
+}
 
 /*
 @Serializable
@@ -96,7 +118,8 @@ data class ExtractionRule(
         val paymentRules: List<RuleDetail>, // 使用List实现回退
         val continueOnContentFailure: Boolean = false,
         val triggerOnEmptyNodes: Boolean = false,
-        val preFilterByKeywords: Boolean = false
+        val preFilterByKeywords: Boolean = false,
+        val allowContentChangeTrigger: Boolean = false
 )
 
 /**
@@ -117,8 +140,14 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                         longPreferencesKey("transactionCooldownMs")
                 private val KEY_WINDOW_CHANGE_DEBOUNCE_MS =
                         longPreferencesKey("windowChangeDebounceMs")
+                private val KEY_CONTENT_CHANGE_DEBOUNCE_MS =
+                        longPreferencesKey("contentChangeDebounceMs")
                 private const val DEFAULT_TRANSACTION_COOLDOWN_MS = 120000L
                 private const val DEFAULT_WINDOW_CHANGE_DEBOUNCE_MS = 500L
+                private const val DEFAULT_CONTENT_CHANGE_DEBOUNCE_MS = 500L
+                private val KEY_ENABLE_WINDOW_CONTENT_CHANGE =
+                        booleanPreferencesKey("enableWindowContentChange")
+                private const val DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE = false
 
                 // 默认值
                 private val DEFAULT_AB_PACKAGES_CONFIG: List<PackageConfigItem> =
@@ -329,7 +358,8 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                         paymentRules = emptyList(),
                                         continueOnContentFailure = false,
                                         triggerOnEmptyNodes = false,
-                                        preFilterByKeywords = true
+                                        preFilterByKeywords = true,
+                                        allowContentChangeTrigger = true
                                 ),
                                 // 规则 7: 天猫
                                 ExtractionRule(
@@ -511,4 +541,146 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                         preferences[KEY_WINDOW_CHANGE_DEBOUNCE_MS] = value
                 }
         }
+        /** 获取内容变化防抖时间（毫秒），若未设置则返回默认值 */
+        suspend fun getContentChangeDebounceMs(): Long {
+                return context.configDataStore
+                        .data
+                        .map { preferences ->
+                                preferences[KEY_CONTENT_CHANGE_DEBOUNCE_MS]
+                                        ?: DEFAULT_CONTENT_CHANGE_DEBOUNCE_MS
+                        }
+                        .first()
+        }
+
+        /** 设置内容变化防抖时间（毫秒） */
+        suspend fun putContentChangeDebounceMs(value: Long) {
+                context.configDataStore.edit { preferences ->
+                        preferences[KEY_CONTENT_CHANGE_DEBOUNCE_MS] = value
+                }
+        }
+        /** 获取是否开启内容变化监听 */
+        suspend fun getEnableWindowContentChange(): Boolean {
+                return context.configDataStore
+                        .data
+                        .map { preferences ->
+                                preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE]
+                                        ?: DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE
+                        }
+                        .first()
+        }
+
+        /** 设置是否开启内容变化监听 */
+        suspend fun putEnableWindowContentChange(value: Boolean) {
+                context.configDataStore.edit { preferences ->
+                        preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE] = value
+                }
+        }
+
+        // flow，触发配置刷新
+        val serviceConfigFlow: Flow<ServiceConfig> =
+                context.configDataStore
+                        .data
+                        .map { preferences ->
+                                val allowedPackagesJson = preferences[KEY_AB_PACKAGE_CONFIG]
+                                val allowedPackages =
+                                        if (allowedPackagesJson != null) {
+                                                try {
+                                                        json.decodeFromString<
+                                                                List<PackageConfigItem>>(
+                                                                allowedPackagesJson
+                                                        )
+                                                } catch (e: Exception) {
+                                                        DEFAULT_AB_PACKAGES_CONFIG
+                                                }
+                                        } else {
+                                                DEFAULT_AB_PACKAGES_CONFIG
+                                        }
+
+                                val allowedPackageNames =
+                                        allowedPackages
+                                                .filter { it.isAllowed }
+                                                .map { it.packageName }
+                                                .toSet()
+
+                                val rulesJson = preferences[KEY_AB_EXTRACTION_RULES]
+                                val rulesList =
+                                        if (rulesJson != null) {
+                                                try {
+                                                        json.decodeFromString<List<ExtractionRule>>(
+                                                                rulesJson
+                                                        )
+                                                } catch (e: Exception) {
+                                                        DEFAULT_AB_EXTRACTION_RULES
+                                                }
+                                        } else {
+                                                DEFAULT_AB_EXTRACTION_RULES
+                                        }
+                                val rulesMap = rulesList.groupBy { it.packageName }
+
+                                val cooldown =
+                                        preferences[KEY_TRANSACTION_COOLDOWN_MS]
+                                                ?: DEFAULT_TRANSACTION_COOLDOWN_MS
+                                val winDebounce =
+                                        preferences[KEY_WINDOW_CHANGE_DEBOUNCE_MS]
+                                                ?: DEFAULT_WINDOW_CHANGE_DEBOUNCE_MS
+                                val contentDebounce =
+                                        preferences[KEY_CONTENT_CHANGE_DEBOUNCE_MS]
+                                                ?: DEFAULT_CONTENT_CHANGE_DEBOUNCE_MS
+                                val enableContent =
+                                        preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE]
+                                                ?: DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE
+
+                                ServiceConfig(
+                                        allowedPackageNames = allowedPackageNames,
+                                        extractionRules = rulesMap,
+                                        transactionCooldownMs = cooldown,
+                                        windowChangeDebounceMs = winDebounce,
+                                        contentChangeDebounceMs = contentDebounce,
+                                        isContentChangeEnabled = enableContent
+                                )
+                        }
+                        .distinctUntilChanged()
+
+        val notificationConfigFlow: Flow<NotificationConfig> =
+                context.configDataStore
+                        .data
+                        .map { preferences ->
+                                val allowedPackagesJson = preferences[KEY_NL_PACKAGE_CONFIG]
+                                val allowedPackagesList =
+                                        if (allowedPackagesJson != null) {
+                                                try {
+                                                        json.decodeFromString<
+                                                                List<PackageConfigItem>>(
+                                                                allowedPackagesJson
+                                                        )
+                                                } catch (e: Exception) {
+                                                        DEFAULT_NL_PACKAGES_CONFIG
+                                                }
+                                        } else {
+                                                DEFAULT_NL_PACKAGES_CONFIG
+                                        }
+
+                                val allowedPackageSet =
+                                        allowedPackagesList
+                                                .filter { it.isAllowed }
+                                                .map { it.packageName }
+                                                .toSet()
+
+                                val keywordsJson = preferences[KEY_NL_STATIC_KEYWORDS]
+                                val keywordsList =
+                                        if (keywordsJson != null) {
+                                                try {
+                                                        json.decodeFromString<List<String>>(
+                                                                keywordsJson
+                                                        )
+                                                } catch (e: Exception) {
+                                                        DEFAULT_NL_KEYWORDS
+                                                }
+                                        } else {
+                                                DEFAULT_NL_KEYWORDS
+                                        }
+
+                                NotificationConfig(allowedPackageSet, keywordsList)
+                        }
+                        .distinctUntilChanged()
 }

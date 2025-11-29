@@ -184,4 +184,28 @@ class NativeMethodChannel {
       // 可以根据需要处理异常
     }
   }
+
+  /// 获取是否开启“窗口内容变化”监听
+  Future<bool> getEnableWindowContentChange() async {
+    try {
+      final bool? result = await _channel.invokeMethod<bool>(
+        'getEnableWindowContentChange',
+      );
+      return result ?? false;
+    } catch (e) {
+      debugPrint('Failed to get enableWindowContentChange: $e');
+      return false;
+    }
+  }
+
+  /// 设置是否开启“窗口内容变化”监听
+  Future<void> putEnableWindowContentChange(bool value) async {
+    try {
+      await _channel.invokeMethod('putEnableWindowContentChange', {
+        'value': value,
+      });
+    } catch (e) {
+      debugPrint('Failed to put enableWindowContentChange: $e');
+    }
+  }
 }

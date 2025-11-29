@@ -4,15 +4,12 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import androidx.collection.LruCache
 import io.flutter.BuildConfig
-import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import timber.log.Timber
@@ -21,16 +18,15 @@ data class NodeData(val windowId: Int, val viewId: String?, val text: String)
 
 private data class PageCacheEntry(val hash: Int, val timestamp: Long)
 
+private data class CachedRuleResult(val rule: ExtractionRule?)
+
 class MyAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val PAGE_HASH_CACHE_SIZE = 100
+        private const val RULE_CACHE_SIZE = 200
         private const val TAG = "AccessibilityTracker"
-        // private const val CONTENT_CHANGE_DEBOUNCE_MS = 1000L
         private const val DUMMY_PACKAGE_NAME = "com.example.nonexistent.package"
-        @Volatile var currentPageId: PageIdentifier? = null // 当前页面ID (包名/类名)
-        // 指向当前服务实例的弱引用 (WeakReference)
-        private var activeServiceInstance: WeakReference<MyAccessibilityService>? = null
 
         fun isAccessibilityServiceEnabled(context: Context): Boolean {
             val accessibilityManager =
@@ -51,108 +47,113 @@ class MyAccessibilityService : AccessibilityService() {
             Timber.d("无障碍服务是否启用: $isEnabled")
             return isEnabled
         }
-
-        fun triggerRefreshAllowedPackagesCache(context: Context) {
-            Timber.d("触发允许的包名缓存刷新...")
-            if (!isAccessibilityServiceEnabled(context)) {
-                return
-            }
-            val serviceInstance = activeServiceInstance?.get()
-            if (serviceInstance != null) {
-                if (Looper.myLooper() == Looper.getMainLooper()) {
-                    serviceInstance.refreshAllowedPackagesCacheFromCompanion()
-                } else {
-                    Handler(Looper.getMainLooper()).post {
-                        serviceInstance.refreshAllowedPackagesCacheFromCompanion()
-                    }
-                }
-            } else {
-                Timber.w("无法刷新缓存：MyAccessibilityService 实例不可用或已被垃圾回收。")
-            }
-        }
     }
 
+    @Volatile private var currentPageId: PageIdentifier? = null // 当前页面ID (包名/类名)
     private val lastHashByPage = LruCache<PageIdentifier, PageCacheEntry>(PAGE_HASH_CACHE_SIZE)
+    private val ruleCache = LruCache<PageIdentifier, CachedRuleResult>(RULE_CACHE_SIZE)
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private var cachedAllowedPackageNames: Array<String>? = null
+    @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
     @Volatile private var cachedExtractionRules: Map<String, List<ExtractionRule>> = emptyMap()
     private val windowChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
+    private val contentChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
     @Volatile private var transactionCooldownMs: Long = 120000L
     @Volatile private var windowChangeDebounceMs: Long = 500L
+    @Volatile private var contentChangeDebounceMs: Long = 500L
+    @Volatile private var isContentChangeEnabled: Boolean = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         Timber.i("无障碍服务已连接。")
-        activeServiceInstance = WeakReference(this)
-        refreshAllowedPackagesCacheInternal()
+        observeServiceConfig()
     }
 
-    private fun refreshAllowedPackagesCacheInternal() {
+    private fun observeServiceConfig() {
         serviceScope.launch {
-            Timber.d("开始刷新内部缓存...")
-            val configManager = ConfigDataStoreManager.getInstance(this@MyAccessibilityService)
-            val allowedPackageConfigs = configManager.getAbAllowPackageConfig()
-            val localAllowedPackageNames =
-                    allowedPackageConfigs
-                            .filter { it.isAllowed }
-                            .map { it.packageName }
-                            .toTypedArray()
+            val configManager = ConfigDataStoreManager.getInstance(applicationContext)
 
-            val localExtractionRules = configManager.getExtractionRules()
-            val cooldown = configManager.getTransactionCooldownMs()
-            val debounceMs = configManager.getWindowChangeDebounceMs()
+            // 监听 Flow
+            configManager.serviceConfigFlow.collect { config ->
+                Timber.d("配置发生变更，正在刷新 Service 缓存...")
 
-            Timber.d("获取到 ${localAllowedPackageNames.size} 个允许的包名。")
-            Timber.d("获取到 ${localExtractionRules.size} 条提取规则。")
-            Timber.d("获取到交易冷却时间: $cooldown ms。")
-            Timber.d("获取到窗口变化防抖时间: $debounceMs ms。") // 新增日志
+                cachedAllowedPackageNames = config.allowedPackageNames
+                cachedExtractionRules = config.extractionRules
+                transactionCooldownMs = config.transactionCooldownMs
+                windowChangeDebounceMs = config.windowChangeDebounceMs
+                contentChangeDebounceMs = config.contentChangeDebounceMs
+                isContentChangeEnabled = config.isContentChangeEnabled
 
-            // 更新 ServiceInfo 必须在主线程
-            withContext(Dispatchers.Main) {
-                this@MyAccessibilityService.cachedAllowedPackageNames = localAllowedPackageNames
-                this@MyAccessibilityService.cachedExtractionRules =
-                        localExtractionRules.groupBy { it.packageName }
-                this@MyAccessibilityService.transactionCooldownMs = cooldown
-                this@MyAccessibilityService.windowChangeDebounceMs = debounceMs // 更新缓存的防抖时间
+                // 清空规则查找缓存，因为规则可能变了
+                ruleCache.evictAll()
 
-                val currentServiceInfo =
-                        this@MyAccessibilityService.serviceInfo ?: AccessibilityServiceInfo()
-                currentServiceInfo.apply {
-                    eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED // or
-                    // 	   AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                    feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-                    notificationTimeout = 100
-                    flags =
-                            AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-                    packageNames =
-                            if (this@MyAccessibilityService.cachedAllowedPackageNames
-                                            .isNullOrEmpty()
-                            ) {
-                                arrayOf(DUMMY_PACKAGE_NAME) // 设置为一个不存在的包名
-                            } else {
-                                this@MyAccessibilityService.cachedAllowedPackageNames
-                            }
-                }
-                setServiceInfo(currentServiceInfo)
-                Timber.i("ServiceInfo 已更新，监听的包: ${cachedAllowedPackageNames?.joinToString()}.")
+                // 更新 ServiceInfo (必须在主线程执行)
+                withContext(Dispatchers.Main) { updateServiceInfo(config) }
+
+                Timber.i("配置刷新完成。监听包数量: ${config.allowedPackageNames.size}")
             }
         }
     }
 
-    private fun refreshAllowedPackagesCacheFromCompanion() {
-        refreshAllowedPackagesCacheInternal()
+    private fun updateServiceInfo(config: ServiceConfig) {
+        val currentServiceInfo = serviceInfo ?: AccessibilityServiceInfo()
+        currentServiceInfo.apply {
+            eventTypes =
+                    if (config.isContentChangeEnabled) {
+                        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                    } else {
+                        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                    }
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            notificationTimeout = 100
+            flags =
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                            AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+
+            packageNames =
+                    if (config.allowedPackageNames.isEmpty()) {
+                        arrayOf("com.example.nonexistent.package")
+                    } else {
+                        config.allowedPackageNames.toTypedArray()
+                    }
+        }
+        setServiceInfo(currentServiceInfo)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        Timber.v(
-                "收到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
-        )
+        // 降低日志级别，避免 TYPE_WINDOW_CONTENT_CHANGED 刷屏
+        // Timber.v(
+        //        "收到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)},
+        // pkg=${event.packageName}, class=${event.className}"
+        // )
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowChange(event)
-        // AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> handleContentChange(event)
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                if (isContentChangeEnabled) {
+                    handleContentChange(event)
+                }
+            }
         }
+    }
+
+    private fun getOrFindRule(pageIdentifier: PageIdentifier): ExtractionRule? {
+
+        val cachedResult = ruleCache.get(pageIdentifier)
+        if (cachedResult != null) {
+            return cachedResult.rule
+        }
+
+        val rulesForPackage = cachedExtractionRules[pageIdentifier.packageName]
+
+        val matchedRule =
+                rulesForPackage?.find { rule ->
+                    pageIdentifier.className.endsWith(rule.activityName, ignoreCase = true)
+                }
+
+        ruleCache.put(pageIdentifier, CachedRuleResult(matchedRule))
+
+        return matchedRule
     }
 
     // 如遇线程问题导致的崩溃，可考虑在防抖结束之后切换到主线程生成节点快照，然后在后台线程处理
@@ -160,196 +161,163 @@ class MyAccessibilityService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: AppConstants.UNKNOWN_PACKAGE
         val className = event.className?.toString() ?: AppConstants.UNKNOWN_CLASS
 
-        if (className == AppConstants.UNKNOWN_CLASS) {
-            Timber.v("忽略 className 无效的窗口事件: pkg=$packageName")
-            return
-        }
+        if (className == AppConstants.UNKNOWN_CLASS) return
 
         val pageIdentifierForDebounce = PageIdentifier(packageName, className)
 
-        val matchingRule =
-                cachedExtractionRules[packageName]?.find { rule ->
-                    className.endsWith(rule.activityName)
-                }
+        this.currentPageId = pageIdentifierForDebounce
 
-        if (matchingRule == null) {
-            Timber.v("忽略无匹配规则的窗口事件: pageId=$pageIdentifierForDebounce")
-            return
-        }
+        // 查找规则
+        val matchingRule = getOrFindRule(pageIdentifierForDebounce) ?: return
 
+        Timber.v(
+                "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
+        )
+
+        // 检查是否在冷却时间内 (针对空节点触发)
         if (matchingRule.triggerOnEmptyNodes) {
             val lastEntry = lastHashByPage.get(pageIdentifierForDebounce)
             if (lastEntry != null) {
                 val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
-                if (timeDiff < this.transactionCooldownMs) {
-                    Timber.d(
-                            "提前跳过: 规则 '${matchingRule.ruleName}' 仍在冷却期内 " +
-                                    "($timeDiff ms < ${this.transactionCooldownMs} ms)。" +
-                                    "不启动防抖任务。"
-                    )
-                    return
-                }
+                if (timeDiff < this.transactionCooldownMs) return
             }
         }
 
-        currentPageId = pageIdentifierForDebounce
-        Timber.d("处理窗口变化: pageId=$pageIdentifierForDebounce. 重置防抖任务。")
-
+        contentChangeDebounceJobs[pageIdentifierForDebounce]?.cancel()
         windowChangeDebounceJobs[pageIdentifierForDebounce]?.cancel()
 
-        windowChangeDebounceJobs[pageIdentifierForDebounce] =
+        val newJob =
+                serviceScope.launch {
+                    delay(windowChangeDebounceMs)
+
+                    // 如果 this.currentPageId 变成了其他页面，当前任务作废
+                    if (this@MyAccessibilityService.currentPageId != pageIdentifierForDebounce) {
+                        return@launch
+                    }
+
+                    // 提取
+                    executeExtraction(pageIdentifierForDebounce, matchingRule)
+                }
+
+        windowChangeDebounceJobs[pageIdentifierForDebounce] = newJob
+
+        newJob.invokeOnCompletion {
+            windowChangeDebounceJobs.remove(pageIdentifierForDebounce, newJob)
+        }
+    }
+
+    // 极端情况可考虑添加熔断
+    private fun handleContentChange(event: AccessibilityEvent) {
+        val currentId = currentPageId ?: return
+        val packageName = event.packageName?.toString() ?: return
+
+        if (packageName != currentId.packageName) return
+
+        val matchingRule = getOrFindRule(currentId) ?: return
+
+        if (!matchingRule.allowContentChangeTrigger) {
+            return
+        }
+
+        Timber.v(
+                "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
+        )
+
+        // 空节点触发在handleWindowChange中已经处理。
+        if (matchingRule.triggerOnEmptyNodes) return
+
+        val lastEntry = lastHashByPage.get(currentId)
+        if (lastEntry != null) {
+            val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
+            if (timeDiff < this.transactionCooldownMs) {
+                Timber.v("优化：页面 ${currentId.className} 已在冷却期内，跳过内容检测。")
+                return
+            }
+        }
+
+        if (windowChangeDebounceJobs.containsKey(currentId)) {
+            Timber.v("优化：页面 ${currentId.className} 正在处理窗口事件，跳过内容检测。")
+            return
+        }
+
+        contentChangeDebounceJobs[currentId]?.cancel()
+        contentChangeDebounceJobs[currentId] =
                 serviceScope
                         .launch {
-                            delay(windowChangeDebounceMs)
-                            Timber.d("防抖延迟结束，开始处理 pageId=$pageIdentifierForDebounce")
+                            delay(contentChangeDebounceMs)
 
-                            val currentGlobalPageIdAfterDelay = currentPageId
-                            if (activeServiceInstance?.get() == null ||
-                                            currentGlobalPageIdAfterDelay !=
-                                                    pageIdentifierForDebounce
-                            ) {
-                                Timber.d(
-                                        "跳过处理：服务实例为空或页面已改变 (当前: $currentGlobalPageIdAfterDelay, 预期: $pageIdentifierForDebounce)"
-                                )
+                            // 环境检查
+                            if (currentPageId != currentId) {
                                 return@launch
                             }
 
-                            if (matchingRule.triggerOnEmptyNodes) {
-                                Timber.i(
-                                        "规则 (ruleName='${matchingRule.ruleName}') 允许在空节点上触发，跳过节点收集，直接处理。"
-                                )
-                                processCollectedNodes(
-                                        pageIdentifierForDebounce,
-                                        emptyList(),
-                                        matchingRule
-                                )
-                            } else {
-                                val rootNode = rootInActiveWindow
-                                if (rootNode == null) {
-                                    Timber.w(
-                                            "rootInActiveWindow 为空，无法为 pageId=$pageIdentifierForDebounce 收集节点。"
-                                    )
-                                    return@launch
-                                }
-
-                                if (matchingRule.preFilterByKeywords) {
-                                    val allKeywords =
-                                            (matchingRule.contentRules.flatMap { it.keywords } +
-                                                            matchingRule.paymentRules.flatMap {
-                                                                it.keywords
-                                                            })
-                                                    .distinct()
-
-                                    if (allKeywords.isNotEmpty()) {
-                                        val keywordFound =
-                                                allKeywords.any { keyword ->
-                                                    rootNode.findAccessibilityNodeInfosByText(
-                                                                    keyword
-                                                            )
-                                                            ?.isNotEmpty() == true
-                                                }
-
-                                        if (!keywordFound) {
-                                            Timber.d(
-                                                    "前置过滤：在页面上未找到任何目标关键字，跳过对 pageId=$pageIdentifierForDebounce 的节点遍历。"
-                                            )
-                                            return@launch
-                                        }
-                                        Timber.d("前置过滤：成功找到关键字，继续执行节点遍历。")
-                                    }
-                                }
-
-                                val collectedNodesForThisEvent = mutableListOf<NodeData>()
-                                traverseAndCollect(rootNode, collectedNodesForThisEvent)
-                                Timber.d(
-                                        "节点遍历完成，为 pageId=$pageIdentifierForDebounce 收集到 ${collectedNodesForThisEvent.size} 个节点。"
-                                )
-                                if (collectedNodesForThisEvent.isNotEmpty()) {
-                                    Timber.d("节点不为空，开始处理。")
-                                    processCollectedNodes(
-                                            pageIdentifierForDebounce,
-                                            ArrayList(collectedNodesForThisEvent),
-                                            matchingRule
-                                    )
-                                } else {
-                                    Timber.d("节点为空，且规则不允许无条件触发，跳过处理。")
-                                }
+                            // 再次检查冷却时间 (防止防抖期间 WindowChange 刚好完成提取)
+                            val freshLastEntry = lastHashByPage.get(currentId)
+                            if (freshLastEntry != null &&
+                                            (System.currentTimeMillis() - freshLastEntry.timestamp <
+                                                    transactionCooldownMs)
+                            ) {
+                                return@launch
                             }
+
+                            // 执行提取
+                            executeExtraction(currentId, matchingRule)
                         }
                         .also { job ->
                             job.invokeOnCompletion {
-                                if (windowChangeDebounceJobs[pageIdentifierForDebounce] == job) {
-                                    windowChangeDebounceJobs.remove(pageIdentifierForDebounce)
+                                if (contentChangeDebounceJobs[currentId] == job) {
+                                    contentChangeDebounceJobs.remove(currentId)
                                 }
                             }
                         }
     }
-    /*
-        private fun handleContentChange(event: AccessibilityEvent) {
-            val pageIdForContentChange = currentPageId // 捕获事件发生时的 pageId
-            if (!isValidPageId(pageIdForContentChange)) {
-                // 可选: 记录接收到无效的 PageId 用于内容更改
-                return
+
+    private suspend fun executeExtraction(
+            pageIdentifier: PageIdentifier,
+            matchingRule: ExtractionRule
+    ) {
+        if (matchingRule.triggerOnEmptyNodes) {
+            processCollectedNodes(pageIdentifier, emptyList(), matchingRule)
+        } else {
+            val rootNode = rootInActiveWindow ?: return
+            try {
+                if (rootNode.packageName?.toString() != pageIdentifier.packageName) {
+                    Timber.w(
+                            "界面已切换 (预期: ${pageIdentifier.packageName}, 实际: ${rootNode.packageName})，放弃提取"
+                    )
+                    return
+                }
+
+                // 前置关键字过滤
+                // 如果关键字多，则取消预过滤，直接进行一次全量遍历匹配
+                if (matchingRule.preFilterByKeywords) {
+                    val allKeywords =
+                            (matchingRule.contentRules.flatMap { it.keywords } +
+                                            matchingRule.paymentRules.flatMap { it.keywords })
+                                    .distinct()
+
+                    if (allKeywords.isNotEmpty()) {
+                        val keywordFound =
+                                allKeywords.any { keyword ->
+                                    rootNode.findAccessibilityNodeInfosByText(keyword)
+                                            ?.isNotEmpty() == true
+                                }
+                        if (!keywordFound) return
+                    }
+                }
+
+                // 收集节点
+                val collectedNodes = mutableListOf<NodeData>()
+                traverseAndCollect(rootNode, collectedNodes)
+
+                if (collectedNodes.isNotEmpty()) {
+                    processCollectedNodes(pageIdentifier, ArrayList(collectedNodes), matchingRule)
+                }
+            } finally {
+                rootNode.recycle()
             }
-            // 取消此特定 pageId 已有的任何防抖任务
-            contentChangeDebounceJobs[pageIdForContentChange]?.cancel()
-
-            // 启动一个新的防抖任务
-            contentChangeDebounceJobs[pageIdForContentChange] =
-                serviceScope
-                    .launch {
-                        delay(CONTENT_CHANGE_DEBOUNCE_MS)
-
-                        // 延迟之后，检查服务是否仍处于活动状态以及页面上下文是否仍然相同。
-                        // 这可以防止在防抖期间用户导航离开或服务停止时进行处理。
-                        val currentActivePageId =
-                            MyAccessibilityService.currentPageId // 获取最新的 currentPageId
-                        if (activeServiceInstance?.get() == null ||
-                            currentActivePageId != pageIdForContentChange
-                        ) {
-                            // 可选: 记录在防抖期间上下文已更改或服务变为非活动状态
-                            if (currentActivePageId != pageIdForContentChange) {
-                                // Log.d(TAG, "页面ID在防抖期间从 $pageIdForContentChange 变为
-                                // $currentActivePageId。跳过。")
-                            }
-                            return@launch
-                        }
-
-                        val collectedNodesForThisEvent = mutableListOf<NodeData>()
-                        // 对于延迟后处理的内容更改，通常更可靠的做法是使用 rootInActiveWindow，
-                        // 因为事件对象或其 source 可能已被回收或变得陈旧。
-                        val rootNode = rootInActiveWindow
-
-                        if (rootNode != null) {
-                            traverseAndCollect(rootNode, collectedNodesForThisEvent)
-                            // 注意: rootInActiveWindow 不需要由服务显式回收。
-                            // 如果您在这里使用 event.source，则需要注意其生命周期。
-                        } else {
-                            // 可选: 记录在防抖后 pageIdForContentChange 的 rootNode 为 null
-                            return@launch
-                        }
-
-                        if (collectedNodesForThisEvent.isNotEmpty()) {
-                            // 处理收集到的节点。此调用已通过 processCollectedNodes 在后台线程上执行。
-                            processCollectedNodes(
-                                pageIdForContentChange,
-                                ArrayList(collectedNodesForThisEvent)
-                            )
-                        } else {
-                            // 可选: 记录在防抖后没有为 pageIdForContentChange 收集到节点
-                        }
-                    }
-                    .also { job ->
-                        // 当任务完成时（正常完成或被取消），将其从映射中移除。
-                        job.invokeOnCompletion {
-                            // 确保我们只移除相同的任务实例，以防止竞争条件。
-                            if (contentChangeDebounceJobs[pageIdForContentChange] == job) {
-                                contentChangeDebounceJobs.remove(pageIdForContentChange)
-                            }
-                        }
-                    }
         }
-    */
+    }
 
     private fun traverseAndCollect(
             node: AccessibilityNodeInfo?,
@@ -359,16 +327,32 @@ class MyAccessibilityService : AccessibilityService() {
 
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(node)
+
         val visitedNodes = mutableSetOf<AccessibilityNodeInfo>()
 
+        val tempRect = android.graphics.Rect()
+
+        // 不处理不可见节点
         while (stack.isNotEmpty()) {
             val currentNode = stack.removeLast()
 
             if (!visitedNodes.add(currentNode)) {
+                // recycle由系统管理，可以不手动回收。
+                currentNode.recycle()
                 continue
             }
 
-            // 收集节点信息
+            if (!currentNode.isVisibleToUser) {
+                currentNode.recycle()
+                continue
+            }
+
+            currentNode.getBoundsInScreen(tempRect)
+            if (tempRect.width() <= 0 || tempRect.height() <= 0) {
+                currentNode.recycle()
+                continue
+            }
+
             currentNode.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
                 collectedNodes.add(
                         NodeData(currentNode.windowId, currentNode.viewIdResourceName, text)
@@ -376,10 +360,14 @@ class MyAccessibilityService : AccessibilityService() {
             }
 
             for (i in (currentNode.childCount - 1) downTo 0) {
-                currentNode.getChild(i)?.let { stack.addLast(it) }
+                currentNode.getChild(i)?.let { childNode -> stack.addLast(childNode) }
+            }
+
+            // AccessibilityNodeInfo 对象由系统管理，可以不需要手动回收它们
+            if (currentNode !== node) {
+                currentNode.recycle()
             }
         }
-        // AccessibilityNodeInfo 对象由系统管理，不需要手动回收它们
     }
 
     private suspend fun processCollectedNodes(
@@ -502,11 +490,8 @@ class MyAccessibilityService : AccessibilityService() {
         Timber.w("无障碍服务被中断。")
         windowChangeDebounceJobs.values.forEach { it.cancel("Service interrupted") }
         windowChangeDebounceJobs.clear()
+        contentChangeDebounceJobs.clear()
         serviceScope.cancel()
-        if (activeServiceInstance?.get() == this) {
-            activeServiceInstance?.clear()
-            activeServiceInstance = null
-        }
     }
 
     override fun onDestroy() {
@@ -514,10 +499,7 @@ class MyAccessibilityService : AccessibilityService() {
         Timber.w("无障碍服务被销毁。")
         windowChangeDebounceJobs.values.forEach { it.cancel("Service destroyed") }
         windowChangeDebounceJobs.clear()
+        contentChangeDebounceJobs.clear()
         serviceScope.cancel()
-        if (activeServiceInstance?.get() == this) {
-            activeServiceInstance?.clear()
-            activeServiceInstance = null
-        }
     }
 }

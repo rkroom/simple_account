@@ -210,9 +210,6 @@ class MethodChannelService {
                                 try {
                                     val packageConfigItems = convertToPackageConfigItems(rawValue)
                                     configManager.putAbAllowPackageConfig(packageConfigItems)
-                                    MyAccessibilityService.triggerRefreshAllowedPackagesCache(
-                                            activity
-                                    )
                                     result.success(null)
                                 } catch (e: Exception) {
                                     when (e) {
@@ -264,9 +261,6 @@ class MethodChannelService {
                                 try {
                                     val packageConfigItems = convertToPackageConfigItems(rawValue)
                                     configManager.putNlAllowPackageConfig(packageConfigItems)
-                                    MyNotificationListenerService.notifyConfigurationChanged(
-                                            activity
-                                    )
                                     result.success(null)
                                 } catch (e: Exception) {
                                     when (e) {
@@ -309,9 +303,6 @@ class MethodChannelService {
                             if (keywords != null) {
                                 try {
                                     configManager.putAllowKeywords(keywords)
-                                    MyNotificationListenerService.notifyConfigurationChanged(
-                                            activity
-                                    )
                                     result.success(null)
                                 } catch (e: Exception) {
                                     result.error(
@@ -349,16 +340,41 @@ class MethodChannelService {
                                     val rules =
                                             Json.decodeFromString<List<ExtractionRule>>(rulesJson)
                                     configManager.putExtractionRules(rules)
-                                    // 刷新服务缓存
-                                    MyAccessibilityService.triggerRefreshAllowedPackagesCache(
-                                            activity
-                                    )
                                     result.success(null)
                                 } catch (e: Exception) {
                                     result.error("PUT_RULES_FAILED", "保存提取规则失败: ${e.message}", null)
                                 }
                             } else {
                                 result.error("INVALID_ARGUMENT", "参数 'rules' 为空。", null)
+                            }
+                        }
+                        "getEnableWindowContentChange" -> {
+                            try {
+                                val value = configManager.getEnableWindowContentChange()
+                                result.success(value)
+                            } catch (e: Exception) {
+                                result.error(
+                                        "GET_CONFIG_FAILED",
+                                        "获取 EnableWindowContentChange 失败: ${e.message}",
+                                        null
+                                )
+                            }
+                        }
+                        "putEnableWindowContentChange" -> {
+                            val value = call.argument<Boolean>("value")
+                            if (value != null) {
+                                try {
+                                    configManager.putEnableWindowContentChange(value)
+                                    result.success(null)
+                                } catch (e: Exception) {
+                                    result.error(
+                                            "PUT_CONFIG_FAILED",
+                                            "保存 EnableWindowContentChange 失败: ${e.message}",
+                                            null
+                                    )
+                                }
+                            } else {
+                                result.error("INVALID_ARGUMENT", "参数 'value' 为空", null)
                             }
                         }
                         else -> result.notImplemented()

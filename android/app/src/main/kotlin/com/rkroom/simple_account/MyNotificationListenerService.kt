@@ -3,52 +3,39 @@ package com.rkroom.simple_account
 import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationManagerCompat
-import java.lang.ref.WeakReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 class MyNotificationListenerService : NotificationListenerService() {
 
     private val billManager by lazy { BillDataStoreManager.getInstance(this) }
     private val configManager by lazy { ConfigDataStoreManager.getInstance(this) }
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    @Volatile private var cachedAllowPackageName: List<String>? = null
-    @Volatile private var cachedAllowKeywords: List<String>? = null
+    @Volatile private var cachedAllowPackageName: Set<String> = emptySet()
+    @Volatile private var cachedAllowKeywords: List<String> = emptyList()
     private val staticRegExp = Regex("(\\d+\\.\\d{2})")
-
-    fun refreshCachedConfig() {
-        serviceScope.launch { loadAndCacheConfig() }
-    }
-
-    private suspend fun loadAndCacheConfig() {
-        cachedAllowPackageName =
-                configManager.getNlAllowPackageConfig().filter { it.isAllowed }.map {
-                    it.packageName
-                }
-        cachedAllowKeywords = configManager.getAllowKeywords()
-    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
+        // 未来可考虑sbn.notification.flags
+        if (sbn.isOngoing) return
+        if (sbn.packageName !in cachedAllowPackageName) {
+            return
+        }
         serviceScope.launch {
-            val notification = sbn.notification
-            if (notification != null) {
-                val title = notification.extras.getString(Notification.EXTRA_TITLE)
-                val content = notification.extras.getString(Notification.EXTRA_TEXT)
-                val packageName = sbn.packageName
-                val postTime = sbn.postTime
-                if (cachedAllowPackageName == null || cachedAllowKeywords == null) {
-                    loadAndCacheConfig()
-                }
-                handleNotification(title, content, packageName, postTime)
-            }
+            
+            val notification = sbn.notification ?: return@launch
+            val title = notification.extras.getString(Notification.EXTRA_TITLE)
+            val content = notification.extras.getString(Notification.EXTRA_TEXT)
+
+            handleNotification(title, content, sbn.packageName, sbn.postTime)
         }
     }
 
@@ -77,43 +64,36 @@ class MyNotificationListenerService : NotificationListenerService() {
             packageName: String?,
             postTime: Long?
     ) {
-        val localPackageCache = cachedAllowPackageName ?: return
-        val localKeywordsCache = cachedAllowKeywords ?: return
+        if (title.isNullOrEmpty() || content.isNullOrEmpty()) return
 
-        if (!localPackageCache.contains(packageName)) {
-            return
-        }
+        val currentKeywords = cachedAllowKeywords
 
-        if (!localKeywordsCache.any { title?.contains(it, ignoreCase = true) == true }) {
-            return
-        }
+        val hasKeyword =
+                currentKeywords.any { keyword -> title.contains(keyword, ignoreCase = true) }
+        if (!hasKeyword) return
 
-        if (staticRegExp.find(content ?: "") == null) {
-            return
-        }
+        if (!staticRegExp.containsMatchIn(content)) return
 
         saveNotificationData(title, content, packageName, postTime)
     }
 
     override fun onCreate() {
         super.onCreate()
-        serviceScope.launch { loadAndCacheConfig() }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Companion.clearActiveInstance(this)
+        serviceScope.cancel()
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
-        Companion.setActiveInstance(this)
-        serviceScope.launch { loadAndCacheConfig() }
+        observeNotificationConfig()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        Companion.clearActiveInstance(this)
+        Timber.i("通知监听服务已断开")
         val componentName = ComponentName(this, MyNotificationListenerService::class.java)
         try {
             requestRebind(componentName)
@@ -122,36 +102,21 @@ class MyNotificationListenerService : NotificationListenerService() {
         }
     }
 
+    private fun observeNotificationConfig() {
+        serviceScope.launch {
+            configManager.notificationConfigFlow.collect { config ->
+                Timber.d(
+                        "通知配置更新: 包名数量=${config.allowedPackages.size}, 关键字数量=${config.keywords.size}"
+                )
+                cachedAllowPackageName = config.allowedPackages
+                cachedAllowKeywords = config.keywords
+            }
+        }
+    }
+
     companion object {
 
         const val PERMISSION_REQUEST_CODE = 1
-
-        private var activeInstanceRef: WeakReference<MyNotificationListenerService>? = null
-
-        internal fun setActiveInstance(service: MyNotificationListenerService) {
-            activeInstanceRef = WeakReference(service)
-        }
-
-        internal fun clearActiveInstance(service: MyNotificationListenerService) {
-            if (activeInstanceRef?.get() == service) {
-                activeInstanceRef?.clear()
-                activeInstanceRef = null
-            }
-        }
-
-        fun notifyConfigurationChanged(context: Context) {
-            if (!isNotificationListenerEnabled(context)) {
-                return
-            }
-            val serviceInstance = activeInstanceRef?.get()
-            if (serviceInstance != null) {
-                if (Looper.myLooper() == Looper.getMainLooper()) {
-                    serviceInstance.refreshCachedConfig()
-                } else {
-                    Handler(Looper.getMainLooper()).post { serviceInstance.refreshCachedConfig() }
-                }
-            }
-        }
 
         fun isNotificationListenerEnabled(context: Context): Boolean {
             val enabledPackages = NotificationManagerCompat.getEnabledListenerPackages(context)

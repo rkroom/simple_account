@@ -29,6 +29,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   bool _postNotificationChecked = false;
   bool _notificationTaskChecked = false;
   bool _scheduleNotificationTaskChecked = false;
+  bool _enableWindowContentChange = false;
   bool _isLoading = true;
   bool _savedAccConfig = false;
   bool _savedNlConfig = false;
@@ -90,6 +91,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               .checkNotificationListenerPermission();
       PermissionStatus status = await Permission.notification.status;
       final postNoti = status == PermissionStatus.granted;
+      final enableWindowChange =
+          await NativeMethodChannel.instance.getEnableWindowContentChange();
 
       final savedAcc = await ConfigService().getSavedAccConfig();
       final savedNl = await ConfigService().getSavedNlConfig();
@@ -119,6 +122,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _accessibilityChecked = acc;
         _notificationChecked = noti;
         _postNotificationChecked = postNoti;
+        _enableWindowContentChange = enableWindowChange;
         _savedAccConfig = savedAcc;
         _savedNlConfig = savedNl;
 
@@ -495,6 +499,41 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               ),
               onTap: () {
                 _navigateToAppSelection(ConfigType.acc);
+              },
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('内容变化监听'),
+              subtitle: const Text(
+                '开启后可识别动态刷新的页面，可能会增加耗电。需开启辅助功能权限。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: Checkbox(
+                value: _enableWindowContentChange,
+                onChanged: (bool? newValue) async {
+                  if (newValue != null) {
+                    // 1. 调用原生方法保存配置
+                    await NativeMethodChannel.instance
+                        .putEnableWindowContentChange(newValue);
+
+                    // 2. 更新界面状态
+                    setState(() {
+                      _enableWindowContentChange = newValue;
+                    });
+                  }
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                // 点击整行也能切换
+                final newValue = !_enableWindowContentChange;
+                await NativeMethodChannel.instance.putEnableWindowContentChange(
+                  newValue,
+                );
+                setState(() {
+                  _enableWindowContentChange = newValue;
+                });
               },
             ),
             ListTile(
