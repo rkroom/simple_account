@@ -36,6 +36,7 @@ class PackageConfig {
 }
 
 class Bill {
+  final String id;
   String? detailed;
   int? account;
   DateTime time;
@@ -46,6 +47,7 @@ class Bill {
   String? source;
 
   Bill({
+    required this.id,
     this.detailed,
     this.account,
     required this.time,
@@ -58,6 +60,7 @@ class Bill {
 
   factory Bill.fromMap(Map<String, dynamic> map, String id) {
     return Bill(
+      id: map['id'] ?? '',
       detailed: map['detailed'],
       account: map['account'],
       time:
@@ -77,6 +80,7 @@ class Bill {
 
   Map<String, dynamic> toMap() {
     return {
+      'id': id,
       'detailed': detailed,
       'account': account,
       'time': time.millisecondsSinceEpoch,

@@ -30,7 +30,6 @@ class MyNotificationListenerService : NotificationListenerService() {
             return
         }
         serviceScope.launch {
-            
             val notification = sbn.notification ?: return@launch
             val title = notification.extras.getString(Notification.EXTRA_TITLE)
             val content = notification.extras.getString(Notification.EXTRA_TEXT)

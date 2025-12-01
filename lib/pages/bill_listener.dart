@@ -144,7 +144,7 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                 return Stack(
                   children: [
                     Transactions(
-                      key: ObjectKey(billItem),
+                      key: ValueKey(billItem.id),
                       amount: billItem.detailed,
                       flow: Transaction.consume,
                       accountNames: accounts[0],
@@ -159,7 +159,7 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                       categoryId: billItem.categoryId,
                       addSuccess: (success) async {
                         if (success) {
-                          await BillListenerService().delBill(index);
+                          await BillListenerService().delBill(billItem.id);
                           bus.emit("add_bill_success");
                           setState(() {
                             notifications.removeAt(index);
@@ -188,7 +188,7 @@ class BillListenerWidgetState extends State<BillListenerWidget>
                       child: IconButton(
                         icon: const Icon(Icons.delete),
                         onPressed: () async {
-                          await BillListenerService().delBill(index);
+                          await BillListenerService().delBill(billItem.id);
                           setState(() {
                             notifications.removeAt(index);
                           });

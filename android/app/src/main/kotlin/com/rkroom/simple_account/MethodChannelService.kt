@@ -53,12 +53,12 @@ class MethodChannelService {
                             result.success(true)
                         }
                         "delBill" -> {
-                            val index = call.argument<Int>("index")
-                            if (index != null) {
-                                billManager.delBill(index)
+                            val id = call.argument<String>("id")
+                            if (id != null) {
+                                billManager.delBill(id)
                                 result.success(true)
                             } else {
-                                result.error("INVALID_ARGUMENT", "Index is null", null)
+                                result.error("INVALID_ARGUMENT", "ID is null", null)
                             }
                         }
                         "copyToDownloads" -> {

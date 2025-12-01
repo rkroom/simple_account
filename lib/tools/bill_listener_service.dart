@@ -17,6 +17,7 @@ class BillListenerService {
   }
 
   static final RegExp regExp = RegExp(r"(\d+\.\d{2})");
+
   static final RegExp jdRegExp = RegExp(r'\d+(?:\.\d{1,2})?');
 
   List<String> billString = [];
@@ -26,25 +27,26 @@ class BillListenerService {
     await NativeMethodChannel.instance.clearBills();
   }
 
-  Future<void> delBill(int index) async {
-    await NativeMethodChannel.instance.delBill(index);
+  Future<void> delBill(String id) async {
+    await NativeMethodChannel.instance.delBill(id);
   }
 
   Future<List> getBills() async {
-    List billsNotification = await NativeMethodChannel.instance.getBills();
-    if (listEquals(billsNotification, billString)) {
+    List bills = await NativeMethodChannel.instance.getBills();
+    if (listEquals(bills, billString)) {
       return billsList;
     }
-    billString = List.from(billsNotification);
+    billString = List.from(bills);
     billsList = [];
-    for (var notification in billsNotification) {
-      billsList.add(await handlerBillString(notification));
+    for (var bill in bills) {
+      billsList.add(await handlerBillString(bill));
     }
     return billsList;
   }
 
   Future<Bill> handlerBillString(String notificationString) async {
     Map<String, dynamic> notification = jsonDecode(notificationString);
+    final String id = notification['id'] as String? ?? '';
     final String packageName = notification['packageName'];
     final String content = notification['content'] as String? ?? 'empty';
     final String title = notification['title'];
@@ -52,6 +54,7 @@ class BillListenerService {
     final String payment = notification['payment'] as String? ?? 'empty';
     final String appName = notification['appName'] as String? ?? 'Unknown';
     return await convertToBill(
+      id,
       packageName,
       content,
       title,
@@ -62,15 +65,16 @@ class BillListenerService {
   }
 
   Future<Bill> convertToBill(
+    String id,
     String packageName,
     String content,
     String title,
     int postTime,
-    payment,
-    appName,
+    String payment,
+    String appName,
   ) async {
-    // 匹配正则表达式
     RegExpMatch? match;
+    // 京东
     if (packageName == "com.jingdong.app.mall") {
       match = jdRegExp.firstMatch(content);
     } else {
@@ -78,6 +82,7 @@ class BillListenerService {
     }
 
     final bill = Bill(
+      id: id,
       detailed: match?.group(0),
       time: DateTime.fromMillisecondsSinceEpoch(postTime),
       source: appName,

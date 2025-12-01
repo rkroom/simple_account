@@ -10,13 +10,25 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import androidx.collection.LruCache
 import io.flutter.BuildConfig
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import timber.log.Timber
 
+// contentDescription，对于复杂的页面可考虑使用
 data class NodeData(val windowId: Int, val viewId: String?, val text: String)
 
-private data class PageCacheEntry(val hash: Int, val timestamp: Long)
+/**
+ * 缓存
+ * @param isComplete 是否已完成提取
+ * @param recordId 数据库 ID
+ */
+private data class PageCacheEntry(
+        val hash: Int,
+        val timestamp: Long,
+        val isComplete: Boolean,
+        val recordId: String
+)
 
 private data class CachedRuleResult(val rule: ExtractionRule?)
 
@@ -52,6 +64,7 @@ class MyAccessibilityService : AccessibilityService() {
     @Volatile private var currentPageId: PageIdentifier? = null // 当前页面ID (包名/类名)
     private val lastHashByPage = LruCache<PageIdentifier, PageCacheEntry>(PAGE_HASH_CACHE_SIZE)
     private val ruleCache = LruCache<PageIdentifier, CachedRuleResult>(RULE_CACHE_SIZE)
+    private val pageTriggerCounts = ConcurrentHashMap<PageIdentifier, Int>()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
     @Volatile private var cachedExtractionRules: Map<String, List<ExtractionRule>> = emptyMap()
@@ -61,6 +74,7 @@ class MyAccessibilityService : AccessibilityService() {
     @Volatile private var windowChangeDebounceMs: Long = 500L
     @Volatile private var contentChangeDebounceMs: Long = 500L
     @Volatile private var isContentChangeEnabled: Boolean = false
+    @Volatile private var maxContentTriggerTimes: Int = 2
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -163,12 +177,13 @@ class MyAccessibilityService : AccessibilityService() {
 
         if (className == AppConstants.UNKNOWN_CLASS) return
 
-        val pageIdentifierForDebounce = PageIdentifier(packageName, className)
-
-        this.currentPageId = pageIdentifierForDebounce
+        val pageIdentifier = PageIdentifier(packageName, className)
+        this.currentPageId = pageIdentifier
+        pageTriggerCounts.clear()
+        pageTriggerCounts[pageIdentifier] = 0
 
         // 查找规则
-        val matchingRule = getOrFindRule(pageIdentifierForDebounce) ?: return
+        val matchingRule = getOrFindRule(pageIdentifier) ?: return
 
         Timber.v(
                 "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
@@ -176,34 +191,33 @@ class MyAccessibilityService : AccessibilityService() {
 
         // 检查是否在冷却时间内 (针对空节点触发)
         if (matchingRule.triggerOnEmptyNodes) {
-            val lastEntry = lastHashByPage.get(pageIdentifierForDebounce)
+            val lastEntry = lastHashByPage.get(pageIdentifier)
             if (lastEntry != null) {
                 val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
                 if (timeDiff < this.transactionCooldownMs) return
             }
         }
 
-        contentChangeDebounceJobs[pageIdentifierForDebounce]?.cancel()
-        windowChangeDebounceJobs[pageIdentifierForDebounce]?.cancel()
+        contentChangeDebounceJobs[pageIdentifier]?.cancel()
+        windowChangeDebounceJobs[pageIdentifier]?.cancel()
 
         val newJob =
                 serviceScope.launch {
                     delay(windowChangeDebounceMs)
 
                     // 如果 this.currentPageId 变成了其他页面，当前任务作废
-                    if (this@MyAccessibilityService.currentPageId != pageIdentifierForDebounce) {
+                    if (this@MyAccessibilityService.currentPageId != pageIdentifier) {
                         return@launch
                     }
 
                     // 提取
-                    executeExtraction(pageIdentifierForDebounce, matchingRule)
+                    executeExtraction(pageIdentifier, matchingRule, isContentChange = false)
+                    incrementTriggerCount(pageIdentifier)
                 }
 
-        windowChangeDebounceJobs[pageIdentifierForDebounce] = newJob
+        windowChangeDebounceJobs[pageIdentifier] = newJob
 
-        newJob.invokeOnCompletion {
-            windowChangeDebounceJobs.remove(pageIdentifierForDebounce, newJob)
-        }
+        newJob.invokeOnCompletion { windowChangeDebounceJobs.remove(pageIdentifier, newJob) }
     }
 
     // 极端情况可考虑添加熔断
@@ -215,28 +229,34 @@ class MyAccessibilityService : AccessibilityService() {
 
         val matchingRule = getOrFindRule(currentId) ?: return
 
-        if (!matchingRule.allowContentChangeTrigger) {
+        if (!matchingRule.allowContentChangeTrigger) return
+
+        val lastEntry = lastHashByPage.get(currentId)
+        if (lastEntry != null && lastEntry.isComplete) {
             return
         }
+
+        val currentCount = pageTriggerCounts[currentId] ?: 0
+        if (currentCount >= maxContentTriggerTimes) {
+            return
+        }
+
+        if (lastEntry != null) {
+            val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
+            // 如果冷却期未过 且 数据已完整 -> 拦截
+            if (timeDiff < transactionCooldownMs && lastEntry.isComplete) {
+                return
+            }
+        }
+
+        if (windowChangeDebounceJobs.containsKey(currentId)) return
 
         Timber.v(
                 "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
         )
 
-        // 空节点触发在handleWindowChange中已经处理。
-        if (matchingRule.triggerOnEmptyNodes) return
-
-        val lastEntry = lastHashByPage.get(currentId)
-        if (lastEntry != null) {
-            val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
-            if (timeDiff < this.transactionCooldownMs) {
-                Timber.v("优化：页面 ${currentId.className} 已在冷却期内，跳过内容检测。")
-                return
-            }
-        }
-
         if (windowChangeDebounceJobs.containsKey(currentId)) {
-            Timber.v("优化：页面 ${currentId.className} 正在处理窗口事件，跳过内容检测。")
+            Timber.v("页面 ${currentId.className} 正在处理窗口事件，跳过内容检测。")
             return
         }
 
@@ -250,18 +270,23 @@ class MyAccessibilityService : AccessibilityService() {
                             if (currentPageId != currentId) {
                                 return@launch
                             }
+                            // 超出次数则不再执行
+                            if ((pageTriggerCounts[currentId] ?: 0) >= maxContentTriggerTimes)
+                                    return@launch
 
                             // 再次检查冷却时间 (防止防抖期间 WindowChange 刚好完成提取)
                             val freshLastEntry = lastHashByPage.get(currentId)
                             if (freshLastEntry != null &&
                                             (System.currentTimeMillis() - freshLastEntry.timestamp <
-                                                    transactionCooldownMs)
+                                                    transactionCooldownMs) &&
+                                            freshLastEntry.isComplete
                             ) {
                                 return@launch
                             }
 
                             // 执行提取
-                            executeExtraction(currentId, matchingRule)
+                            executeExtraction(currentId, matchingRule, isContentChange = true)
+                            incrementTriggerCount(currentId)
                         }
                         .also { job ->
                             job.invokeOnCompletion {
@@ -274,10 +299,12 @@ class MyAccessibilityService : AccessibilityService() {
 
     private suspend fun executeExtraction(
             pageIdentifier: PageIdentifier,
-            matchingRule: ExtractionRule
+            matchingRule: ExtractionRule,
+            isContentChange: Boolean
     ) {
-        if (matchingRule.triggerOnEmptyNodes) {
-            processCollectedNodes(pageIdentifier, emptyList(), matchingRule)
+        val usePlaceholder = matchingRule.triggerOnEmptyNodes && !isContentChange
+        if (usePlaceholder) {
+            processCollectedNodes(pageIdentifier, emptyList(), matchingRule, isContentChange)
         } else {
             val rootNode = rootInActiveWindow ?: return
             try {
@@ -311,10 +338,21 @@ class MyAccessibilityService : AccessibilityService() {
                 traverseAndCollect(rootNode, collectedNodes)
 
                 if (collectedNodes.isNotEmpty()) {
-                    processCollectedNodes(pageIdentifier, ArrayList(collectedNodes), matchingRule)
+                    processCollectedNodes(
+                            pageIdentifier,
+                            ArrayList(collectedNodes),
+                            matchingRule,
+                            isContentChange
+                    )
                 }
+            } catch (e: Exception) {
+                Timber.e(e, "提取过程发生异常")
             } finally {
-                rootNode.recycle()
+                try {
+                    rootNode.recycle()
+                } catch (e: IllegalStateException) {
+                    // 忽略已经回收的异常，防止崩溃
+                }
             }
         }
     }
@@ -330,7 +368,8 @@ class MyAccessibilityService : AccessibilityService() {
 
         val visitedNodes = mutableSetOf<AccessibilityNodeInfo>()
 
-        val tempRect = android.graphics.Rect()
+        // IPC (跨进程) 调用，较为耗费性能
+        // val tempRect = android.graphics.Rect()
 
         // 不处理不可见节点
         while (stack.isNotEmpty()) {
@@ -347,11 +386,12 @@ class MyAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            currentNode.getBoundsInScreen(tempRect)
-            if (tempRect.width() <= 0 || tempRect.height() <= 0) {
-                currentNode.recycle()
-                continue
-            }
+            // IPC (跨进程) 调用，较为耗费性能
+            // currentNode.getBoundsInScreen(tempRect)
+            // if (tempRect.width() <= 0 || tempRect.height() <= 0) {
+            //    currentNode.recycle()
+            //    continue
+            // }
 
             currentNode.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
                 collectedNodes.add(
@@ -365,7 +405,11 @@ class MyAccessibilityService : AccessibilityService() {
 
             // AccessibilityNodeInfo 对象由系统管理，可以不需要手动回收它们
             if (currentNode !== node) {
-                currentNode.recycle()
+                try {
+                    currentNode.recycle()
+                } catch (e: IllegalStateException) {
+                    // 防御性捕获
+                }
             }
         }
     }
@@ -373,7 +417,8 @@ class MyAccessibilityService : AccessibilityService() {
     private suspend fun processCollectedNodes(
             pageIdentifierForProcessing: PageIdentifier,
             nodesToProcess: List<NodeData>,
-            matchedRule: ExtractionRule
+            matchedRule: ExtractionRule,
+            isContentChange: Boolean
     ) =
             withContext(Dispatchers.IO) {
                 Timber.d(
@@ -390,7 +435,13 @@ class MyAccessibilityService : AccessibilityService() {
                             "提取成功: pageId=$pageIdentifierForProcessing, content='${content?.take(50)}...', payment='$payment'"
                     )
                     if (content != null || payment != null) {
-                        saveIfNew(content, payment, pageIdentifierForProcessing)
+                        saveIfNew(
+                                content,
+                                payment,
+                                pageIdentifierForProcessing,
+                                matchedRule,
+                                isContentChange
+                        )
                     }
                 } else {
                     Timber.d("未从 pageId=$pageIdentifierForProcessing 中提取到任何内容。")
@@ -400,59 +451,67 @@ class MyAccessibilityService : AccessibilityService() {
     private suspend fun saveIfNew(
             content: String?,
             payment: String?,
-            pageIdentifier: PageIdentifier
+            pageIdentifier: PageIdentifier,
+            rule: ExtractionRule,
+            isContentChange: Boolean
     ) {
-        // 如果没有提取到任何有效内容，则直接返回
-        if (content == null && payment == null) {
-            return
+        if (content == null && payment == null) return
+
+        val combinedHash = "c:${content}|p:${payment}".hashCode()
+        val currentTime = System.currentTimeMillis()
+        val lastEntry = lastHashByPage.get(pageIdentifier)
+
+        // 是否饱和 (有 Content 且 (无需Payment 或 有Payment))
+        val isDataComplete = (content != null) && (!rule.hasPaymentInfo || payment != null)
+
+        var shouldSave = false
+        //  默认生成新 ID
+        var targetRecordId: String = UUID.randomUUID().toString()
+
+        if (lastEntry == null) {
+            //  首次记录 (使用新 ID)
+            shouldSave = true
+        } else {
+            val isCoolingDown = (currentTime - lastEntry.timestamp) < transactionCooldownMs
+
+            if (!isCoolingDown) {
+                // 新交易 (使用新 ID)
+                shouldSave = true
+            } else {
+                // 冷却期内 -> 检查更新
+                if (lastEntry.hash != combinedHash) {
+                    shouldSave = true
+                    // 复用旧 ID，执行更新
+                    targetRecordId = lastEntry.recordId
+                    Timber.d("数据更新，ID: $targetRecordId")
+                }
+            }
         }
 
-        // 将提取出的 content 和 payment 组合成一个字符串，用于生成哈希值
-        val combinedDataForHash = "content:${content ?: "null"}|payment:${payment ?: "null"}"
-        val currentHash = combinedDataForHash.hashCode()
-        // 获取当前时间戳
-        val currentTime = System.currentTimeMillis()
-        Timber.d("saveIfNew检查: pageId=$pageIdentifier, hash=$currentHash")
-        // 从缓存中获取上次针对该页面的记录项
-        Timber.d("即将从 LruCache 获取 pageId: %s 的条目...", pageIdentifier)
-        val lastEntry = lastHashByPage.get(pageIdentifier)
-        Timber.d("LruCache.get 完成。lastEntry 是否为 null: %s", lastEntry == null)
-
-        // 判断是否应该保存的逻辑
-        val shouldSave =
-                if (lastEntry == null) {
-                    Timber.d("决策: 保存。原因: 首次记录该页面。")
-                    true
-                } else if (lastEntry.hash != currentHash) {
-                    Timber.d("决策: 保存。原因: 内容哈希已改变 (旧=${lastEntry.hash}, 新=$currentHash)。")
-                    true
-                } else {
-                    val timeDiff = currentTime - lastEntry.timestamp
-                    val decision = timeDiff > this.transactionCooldownMs
-                    Timber.d(
-                            "决策: ${if (decision) "保存" else "跳过"}。原因: 内容哈希相同，时间差 ($timeDiff ms) vs 冷却时间 (${this.transactionCooldownMs} ms)。"
-                    )
-                    decision
-                }
-
-        // 如果判断结果为应该保存
         if (shouldSave) {
-            Timber.i("正在为 pageId=$pageIdentifier 保存新条目...")
-            // 创建一个新的缓存条目，包含新的哈希和当前时间戳
-            val newEntry = PageCacheEntry(hash = currentHash, timestamp = currentTime)
-            // 将新条目放入缓存，覆盖旧的记录
+            // 更新缓存
+            val newEntry =
+                    PageCacheEntry(
+                            hash = combinedHash,
+                            // 更新保持原时间戳
+                            timestamp =
+                                    if (lastEntry != null && lastEntry.recordId == targetRecordId)
+                                            lastEntry.timestamp
+                                    else currentTime,
+                            isComplete = isDataComplete,
+                            recordId = targetRecordId
+                    )
             lastHashByPage.put(pageIdentifier, newEntry)
-            // 调用方法，将数据真正地保存到数据库
-            saveData(pageIdentifier, content, payment)
-        } else {
-            Timber.w("决策为 '跳过'，saveData 方法不会被调用。")
+
+            saveData(pageIdentifier, content, payment, targetRecordId)
         }
     }
 
     private suspend fun saveData(
             pageIdentifier: PageIdentifier,
             content: String?,
-            payment: String?
+            payment: String?,
+            recordId: String
     ) {
         val packageName = pageIdentifier.packageName
         val activityTitle = pageIdentifier.className
@@ -476,7 +535,8 @@ class MyAccessibilityService : AccessibilityService() {
 
         val data =
                 BillData(
-                        title = activityTitle,
+                        id = recordId,
+                        title = pageIdentifier.className,
                         content = content,
                         packageName = packageName,
                         postTime = System.currentTimeMillis(),
@@ -484,6 +544,10 @@ class MyAccessibilityService : AccessibilityService() {
                         appName = appName
                 )
         BillingRepository.saveBill(applicationContext, data)
+    }
+
+    private fun incrementTriggerCount(id: PageIdentifier) {
+        pageTriggerCounts[id] = (pageTriggerCounts[id] ?: 0) + 1
     }
 
     override fun onInterrupt() {

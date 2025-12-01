@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Process
 import android.provider.MediaStore
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -96,6 +97,7 @@ fun convertToPackageConfigItems(rawValue: List<Map<String, Any?>>): List<Package
 
 @Serializable
 data class BillData(
+        val id: String = UUID.randomUUID().toString(),
         val title: String?,
         val content: String?,
         val packageName: String?,
@@ -151,9 +153,7 @@ object BillingRepository {
     fun saveBill(context: Context, billData: BillData) {
         repositoryScope.launch {
             try {
-                val jsonString = json.encodeToString(billData)
-                BillDataStoreManager.getInstance(context).addBill(jsonString)
-                Timber.i("BillingRepository: 成功保存一条账单数据。")
+                BillDataStoreManager.getInstance(context).addOrUpdateBill(billData)
             } catch (e: Exception) {
                 Timber.e(e, "BillingRepository: 保存账单数据失败。")
             }

@@ -32,6 +32,15 @@ class NativeMethodChannel {
     await _channel.invokeMethod('requestNotificationPermission');
   }
 
+  Future openAccessibilitySettings() async {
+    await _channel.invokeMethod('openAccessibilitySettings');
+  }
+
+  Future<bool> checkAccessibilityPermission() async {
+    var permission = await _channel.invokeMethod('isAccessibilityEnabled');
+    return permission;
+  }
+
   Future getBills() async {
     return await _channel.invokeMethod('getBills');
   }
@@ -41,8 +50,8 @@ class NativeMethodChannel {
     return count;
   }
 
-  Future delBill(int index) async {
-    return await _channel.invokeMethod('delBill', {'index': index});
+  Future delBill(String id) async {
+    return await _channel.invokeMethod('delBill', {'id': id});
   }
 
   Future exportJsonToDownloads(String jsonString, String fileName) async {
@@ -57,15 +66,6 @@ class NativeMethodChannel {
       'sourcePath': sourcePath,
       'fileName': fileName,
     });
-  }
-
-  Future openAccessibilitySettings() async {
-    await _channel.invokeMethod('openAccessibilitySettings');
-  }
-
-  Future<bool> checkAccessibilityPermission() async {
-    var permission = await _channel.invokeMethod('isAccessibilityEnabled');
-    return permission;
   }
 
   Future<void> putConfig(String key, String value) async {
@@ -97,6 +97,7 @@ class NativeMethodChannel {
           .map((item) => Map<String, dynamic>.from(item as Map))
           .toList();
     } catch (e) {
+      debugPrint('Error parsing AbAllowPackageConfig: $e');
       return null;
     }
   }
@@ -115,6 +116,7 @@ class NativeMethodChannel {
           .map((item) => Map<String, dynamic>.from(item as Map))
           .toList();
     } catch (e) {
+      debugPrint('Error parsing NlAllowPackageConfig: $e');
       return null;
     }
   }
@@ -141,26 +143,22 @@ class NativeMethodChannel {
     try {
       await _channel.invokeMethod('putAllowKeywords', {'keywords': keywords});
     } catch (e) {
-      //
+      debugPrint('Failed to put keywords: $e');
     }
   }
 
   Future<List<Map<String, dynamic>>> getExtractionRules() async {
     try {
-      // 1. 调用原生方法，现在期望返回一个JSON字符串
       final String? rulesJsonString = await _channel.invokeMethod<String>(
         'getExtractionRules',
       );
 
-      // 2. 如果返回的字符串为空，则返回一个空列表
       if (rulesJsonString == null || rulesJsonString.isEmpty) {
         return [];
       }
 
-      // 3. 使用 dart:convert 解码JSON字符串
       final List<dynamic> decodedList = jsonDecode(rulesJsonString);
 
-      // 4. 将解码后的列表转换为期望的类型 List<Map<String, dynamic>>
       return decodedList
           .map((item) => Map<String, dynamic>.from(item as Map))
           .toList();
@@ -181,11 +179,9 @@ class NativeMethodChannel {
       await _channel.invokeMethod('putExtractionRules', {'rules': jsonString});
     } catch (e) {
       debugPrint('Failed to put extraction rules: $e');
-      // 可以根据需要处理异常
     }
   }
 
-  /// 获取是否开启“窗口内容变化”监听
   Future<bool> getEnableWindowContentChange() async {
     try {
       final bool? result = await _channel.invokeMethod<bool>(
@@ -198,7 +194,6 @@ class NativeMethodChannel {
     }
   }
 
-  /// 设置是否开启“窗口内容变化”监听
   Future<void> putEnableWindowContentChange(bool value) async {
     try {
       await _channel.invokeMethod('putEnableWindowContentChange', {

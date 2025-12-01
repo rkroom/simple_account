@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -33,7 +34,8 @@ data class ServiceConfig(
         val transactionCooldownMs: Long,
         val windowChangeDebounceMs: Long,
         val contentChangeDebounceMs: Long,
-        val isContentChangeEnabled: Boolean
+        val isContentChangeEnabled: Boolean,
+        val maxContentTriggerTimes: Int
 )
 
 /** 通知监听服务配置 */
@@ -119,14 +121,16 @@ data class ExtractionRule(
         val continueOnContentFailure: Boolean = false,
         val triggerOnEmptyNodes: Boolean = false,
         val preFilterByKeywords: Boolean = false,
-        val allowContentChangeTrigger: Boolean = false
+        val allowContentChangeTrigger: Boolean = false,
+        val hasPaymentInfo: Boolean = true
 )
 
 /**
  * 使用 DataStore-Preferences 管理应用配置 数据存放在
  * /data/data/<your.package>/files/datastore/ConfigPreferences.pb
  */
-class ConfigDataStoreManager private constructor(private val context: Context) {
+class ConfigDataStoreManager private constructor(context: Context) {
+        private val context = context.applicationContext
 
         companion object {
                 @Volatile private var instance: ConfigDataStoreManager? = null
@@ -142,9 +146,12 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                         longPreferencesKey("windowChangeDebounceMs")
                 private val KEY_CONTENT_CHANGE_DEBOUNCE_MS =
                         longPreferencesKey("contentChangeDebounceMs")
+                private val KEY_MAX_CONTENT_TRIGGER_TIMES =
+                        intPreferencesKey("maxContentTriggerTimes")
                 private const val DEFAULT_TRANSACTION_COOLDOWN_MS = 120000L
                 private const val DEFAULT_WINDOW_CHANGE_DEBOUNCE_MS = 500L
                 private const val DEFAULT_CONTENT_CHANGE_DEBOUNCE_MS = 500L
+                private const val DEFAULT_MAX_CONTENT_TRIGGER_TIMES = 2
                 private val KEY_ENABLE_WINDOW_CONTENT_CHANGE =
                         booleanPreferencesKey("enableWindowContentChange")
                 private const val DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE = false
@@ -386,15 +393,15 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                 )
                         )
 
-                fun getInstance(context: Context): ConfigDataStoreManager =
-                        instance
+                fun getInstance(context: Context): ConfigDataStoreManager {
+                        return instance
                                 ?: synchronized(this) {
                                         instance
-                                                ?: ConfigDataStoreManager(
-                                                                context.applicationContext
-                                                        )
-                                                        .also { instance = it }
+                                                ?: ConfigDataStoreManager(context).also {
+                                                        instance = it
+                                                }
                                 }
+                }
         }
 
         private val json = Json {
@@ -629,6 +636,9 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                 val enableContent =
                                         preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE]
                                                 ?: DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE
+                                val maxTriggerTimes =
+                                        preferences[KEY_MAX_CONTENT_TRIGGER_TIMES]
+                                                ?: DEFAULT_MAX_CONTENT_TRIGGER_TIMES
 
                                 ServiceConfig(
                                         allowedPackageNames = allowedPackageNames,
@@ -636,7 +646,8 @@ class ConfigDataStoreManager private constructor(private val context: Context) {
                                         transactionCooldownMs = cooldown,
                                         windowChangeDebounceMs = winDebounce,
                                         contentChangeDebounceMs = contentDebounce,
-                                        isContentChangeEnabled = enableContent
+                                        isContentChangeEnabled = enableContent,
+                                        maxContentTriggerTimes = maxTriggerTimes
                                 )
                         }
                         .distinctUntilChanged()

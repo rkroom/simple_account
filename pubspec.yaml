@@ -57,18 +57,18 @@ dependencies:
   #国际化与本地化
   intl: ^0.20.2
   #本地通知
-  flutter_local_notifications: ^19.2.1
+  flutter_local_notifications: ^19.5.0
   #定时任务
   workmanager: ^0.7.0
   #安全存储
   flutter_secure_storage: ^9.2.3
   #设备信息
-  device_info_plus: ^12.1.0
+  device_info_plus: ^12.3.0
   #日历显示
   table_calendar: ^3.2.0
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  installed_apps: ^1.6.0
+  installed_apps: ^2.0.0
 
 dev_dependencies:
   flutter_test:

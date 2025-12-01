@@ -216,7 +216,11 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
-      final apps = await InstalledApps.getInstalledApps(true, true);
+      // installed_apps更新后需要使用命名参数
+      final apps = await InstalledApps.getInstalledApps(
+        excludeSystemApps: true,
+        withIcon: true,
+      );
       final appInfoMap = {for (var app in apps) app.packageName: app};
 
       final rawConfigData =
