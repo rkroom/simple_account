@@ -305,54 +305,88 @@ class MyAccessibilityService : AccessibilityService() {
         val usePlaceholder = matchingRule.triggerOnEmptyNodes && !isContentChange
         if (usePlaceholder) {
             processCollectedNodes(pageIdentifier, emptyList(), matchingRule, isContentChange)
-        } else {
-            val rootNode = rootInActiveWindow ?: return
-            try {
-                if (rootNode.packageName?.toString() != pageIdentifier.packageName) {
-                    Timber.w(
-                            "界面已切换 (预期: ${pageIdentifier.packageName}, 实际: ${rootNode.packageName})，放弃提取"
-                    )
-                    return
-                }
+            return
+        }
 
-                // 前置关键字过滤
-                // 如果关键字多，则取消预过滤，直接进行一次全量遍历匹配
-                if (matchingRule.preFilterByKeywords) {
-                    val allKeywords =
-                            (matchingRule.contentRules.flatMap { it.keywords } +
-                                            matchingRule.paymentRules.flatMap { it.keywords })
-                                    .distinct()
+        val rootNode = rootInActiveWindow ?: return
+        try {
+            if (rootNode.packageName?.toString() != pageIdentifier.packageName) {
+                Timber.w(
+                        "界面已切换 (预期: ${pageIdentifier.packageName}, 实际: ${rootNode.packageName})，放弃提取"
+                )
+                return
+            }
 
-                    if (allKeywords.isNotEmpty()) {
-                        val keywordFound =
-                                allKeywords.any { keyword ->
-                                    rootNode.findAccessibilityNodeInfosByText(keyword)
-                                            ?.isNotEmpty() == true
-                                }
-                        if (!keywordFound) return
+            var fastPathSuccess = false
+
+            if (canUseFastDirectViewId(matchingRule)) {
+                Timber.d("规则符合纯 DirectViewId 策略，执行快速查找...")
+                val fastNodes = performFastDirectIdLookup(rootNode, matchingRule)
+
+                if (fastNodes.isNotEmpty()) {
+
+                    val result =
+                            withContext(Dispatchers.IO) {
+                                Extractor.extract(pageIdentifier, fastNodes, matchingRule)
+                            }
+
+                    if (result != null) {
+                        val (content, payment) = result
+
+                        if (content != null || payment != null) {
+                            Timber.i("快速 DirectViewId 查找命中。")
+                            processCollectedNodes(
+                                    pageIdentifier,
+                                    fastNodes,
+                                    matchingRule,
+                                    isContentChange
+                            )
+                            fastPathSuccess = true
+                        }
                     }
                 }
+            }
 
-                // 收集节点
-                val collectedNodes = mutableListOf<NodeData>()
-                traverseAndCollect(rootNode, collectedNodes)
+            // 如果快速路径成功，直接返回，跳过下面的全量遍历
+            if (fastPathSuccess) return
 
-                if (collectedNodes.isNotEmpty()) {
-                    processCollectedNodes(
-                            pageIdentifier,
-                            ArrayList(collectedNodes),
-                            matchingRule,
-                            isContentChange
-                    )
+            // 前置关键字过滤
+            // 如果关键字多，则取消预过滤，直接进行一次全量遍历匹配
+            if (matchingRule.preFilterByKeywords) {
+                val allKeywords =
+                        (matchingRule.contentRules.flatMap { it.keywords } +
+                                        matchingRule.paymentRules.flatMap { it.keywords })
+                                .distinct()
+
+                if (allKeywords.isNotEmpty()) {
+                    val keywordFound =
+                            allKeywords.any { keyword ->
+                                rootNode.findAccessibilityNodeInfosByText(keyword)?.isNotEmpty() ==
+                                        true
+                            }
+                    if (!keywordFound) return
                 }
-            } catch (e: Exception) {
-                Timber.e(e, "提取过程发生异常")
-            } finally {
-                try {
-                    rootNode.recycle()
-                } catch (e: IllegalStateException) {
-                    // 忽略已经回收的异常，防止崩溃
-                }
+            }
+
+            // 收集节点
+            val collectedNodes = mutableListOf<NodeData>()
+            traverseAndCollect(rootNode, collectedNodes)
+
+            if (collectedNodes.isNotEmpty()) {
+                processCollectedNodes(
+                        pageIdentifier,
+                        ArrayList(collectedNodes),
+                        matchingRule,
+                        isContentChange
+                )
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "提取过程发生异常")
+        } finally {
+            try {
+                rootNode.recycle()
+            } catch (e: IllegalStateException) {
+                // 忽略
             }
         }
     }
@@ -548,6 +582,69 @@ class MyAccessibilityService : AccessibilityService() {
 
     private fun incrementTriggerCount(id: PageIdentifier) {
         pageTriggerCounts[id] = (pageTriggerCounts[id] ?: 0) + 1
+    }
+
+    /** 判断是否可以使用快速查找路径。 仅当 ContentRules 和 PaymentRules 中的所有策略都是 DirectViewId 且为精确匹配时返回 true。 */
+    private fun canUseFastDirectViewId(rule: ExtractionRule): Boolean {
+        // 定义检查逻辑：必须是 DirectViewId 且 useExactMatch = true
+        fun isStrategyPureDirectId(details: List<RuleDetail>): Boolean {
+            if (details.isEmpty()) return true
+            return details.all { detail ->
+                val strategy = detail.strategy
+                strategy is DirectViewId && strategy.useExactMatch
+            }
+        }
+
+        // 必须同时满足 Content 和 Payment 规则
+        return isStrategyPureDirectId(rule.contentRules) &&
+                isStrategyPureDirectId(rule.paymentRules)
+    }
+
+    /** 执行快速 ViewId 查找。 直接调用系统 API findAccessibilityNodeInfosByViewId，避免遍历整个树。 */
+    private fun performFastDirectIdLookup(
+            rootNode: AccessibilityNodeInfo,
+            rule: ExtractionRule
+    ): List<NodeData> {
+        val collectedNodes = mutableListOf<NodeData>()
+        // 使用 Set 去重，避免同一个 ID 在 Content 和 Payment 中重复查找
+        val targetViewIds = mutableSetOf<String>()
+
+        // 收集 ContentRules 中的 ID
+        rule.contentRules.forEach {
+            val strategy = it.strategy
+            if (strategy is DirectViewId && strategy.useExactMatch) {
+                targetViewIds.add(strategy.viewId)
+            }
+        }
+
+        // 收集 PaymentRules 中的 ID
+        rule.paymentRules.forEach {
+            val strategy = it.strategy
+            if (strategy is DirectViewId && strategy.useExactMatch) {
+                targetViewIds.add(strategy.viewId)
+            }
+        }
+
+        // 调用系统 API 查找
+        for (viewId in targetViewIds) {
+            // 系统 API 返回的是 list
+            val foundNodes = rootNode.findAccessibilityNodeInfosByViewId(viewId)
+            if (!foundNodes.isNullOrEmpty()) {
+                for (node in foundNodes) {
+                    if (node.isVisibleToUser) {
+                        val text = node.text?.toString()?.trim()
+                        if (!text.isNullOrEmpty()) {
+                            collectedNodes.add(
+                                    NodeData(node.windowId, node.viewIdResourceName, text)
+                            )
+                        }
+                    }
+                    // 系统返回的节点需要回收
+                    node.recycle()
+                }
+            }
+        }
+        return collectedNodes
     }
 
     override fun onInterrupt() {

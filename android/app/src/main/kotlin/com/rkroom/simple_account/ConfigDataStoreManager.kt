@@ -48,7 +48,7 @@ data class NotificationConfig(
 @Serializable sealed interface ExtractionStrategy
 
 /**
- * 策略1: 简单偏移量提取
+ * 策略: 简单偏移量提取
  * @param offset 偏移量
  * @param useExactMatch 是否要求关键字完全匹配
  */
@@ -57,7 +57,7 @@ data class NotificationConfig(
 data class SimpleOffset(val offset: Int, val useExactMatch: Boolean = false) : ExtractionStrategy
 
 /**
- * 策略2: 条件偏移量提取
+ * 策略: 条件偏移量提取
  * @param checkOffset 条件节点的偏移量
  * @param expectedText 条件节点应包含的文本 (例如 "￥")
  * @param targetOffset 满足条件时，目标数据节点的偏移量
@@ -70,10 +70,30 @@ data class ConditionalOffset(
         val targetOffset: Int
 ) : ExtractionStrategy
 
-/** 策略3: 文本拼接 */
+/** 策略: 文本拼接 */
 @Serializable
 @SerialName("Concatenate")
 data class Concatenate(val parts: List<ConcatPart>) : ExtractionStrategy
+
+/**
+ * 策略: 直接通过 View ID 提取文本 (不依赖关键字定位) 适用于 RuleDetail 中 keywords 为空的情况
+ * @param viewId 目标控件的 ID
+ * @param useExactMatch 是否需要完全匹配 (true: 必须包含包名; false: 只要 ID 后缀匹配即可)
+ */
+@Serializable
+@SerialName("DirectViewId")
+data class DirectViewId(val viewId: String, val useExactMatch: Boolean = false) :
+        ExtractionStrategy
+
+/**
+ * 策略: 直接通过 View ID 提取文本
+ * @param viewId 目标控件的 ID
+ * @param useExactMatch 是否需要完全匹配 (true: 必须包含包名; false: 只要 ID 后缀匹配即可)
+ */
+@Serializable
+@SerialName("ExtractByViewId")
+data class ExtractByViewId(val viewId: String, val useExactMatch: Boolean = false) :
+        ExtractionStrategy
 
 /** 定义拼接的各个部分 */
 @Serializable sealed interface ConcatPart
@@ -249,11 +269,19 @@ class ConfigDataStoreManager private constructor(context: Context) {
                                         packageName = "com.eg.android.AlipayGphone",
                                         activityName =
                                                 "com.alipay.android.phone.businesscommon.ucdp.nfc.activity.NResPageActivity",
+                                        continueOnContentFailure = true,
+                                        allowContentChangeTrigger = true,
                                         contentRules =
                                                 listOf(
                                                         RuleDetail(
                                                                 keywords = listOf("支付成功"),
-                                                                strategy = SimpleOffset(offset = 3)
+                                                                strategy =
+                                                                        ExtractByViewId(
+                                                                                viewId =
+                                                                                        "summary_amount_text",
+                                                                                useExactMatch =
+                                                                                        false
+                                                                        )
                                                         )
                                                 ),
                                         paymentRules =

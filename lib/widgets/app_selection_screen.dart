@@ -487,7 +487,21 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
           "ruleName": "Rule for $packageName",
           "packageName": packageName,
           "activityName": "",
+          "continueOnContentFailure": true,
+          "allowContentChangeTrigger": true,
+          "triggerOnEmptyNodes": false,
+          "preFilterByKeywords": false,
           "contentRules": [
+            {
+              "keywords": ["请填写关键字"],
+              "strategy": {
+                "type": "ExtractByViewId",
+                "viewId": "在此处填写控件ID(如: amount_text)",
+                "useExactMatch": false,
+              },
+            },
+          ],
+          "paymentRules": [
             {
               "keywords": ["请填写关键字"],
               "strategy": {
@@ -497,10 +511,6 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
               },
             },
           ],
-          "paymentRules": [],
-          "continueOnContentFailure": false,
-          "triggerOnEmptyNodes": false,
-          "preFilterByKeywords": false,
         },
       ];
       initialText = _jsonEncoder.convert(defaultRule);

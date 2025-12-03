@@ -211,6 +211,44 @@ object Extractor {
                         // 如果最终结果非空，则返回；否则返回 null
                         concatenatedResult.takeIf { it.isNotEmpty() }
                     }
+                    is ExtractByViewId -> {
+                        Timber.d("ExtractByViewId: 正在查找 ID '${strategy.viewId}'")
+
+                        // 遍历所有节点，查找 ViewId 匹配的项
+                        val targetNode =
+                                nodes.firstOrNull { node ->
+                                    val nodeId = node.viewId ?: return@firstOrNull false
+
+                                    if (strategy.useExactMatch) {
+                                        // 精确匹配：必须完全相等(com.pkg:id/name)
+                                        nodeId == strategy.viewId
+                                    } else {
+                                        // 模糊匹配：结尾匹配
+                                        nodeId.endsWith(strategy.viewId)
+                                    }
+                                }
+
+                        if (targetNode != null) {
+                            Timber.d("ExtractByViewId: 找到匹配节点，ID='${targetNode.viewId}'")
+                        }
+
+                        targetNode?.text?.trim()?.takeIf { it.isNotBlank() }
+                    }
+                    is DirectViewId -> {
+                        Timber.d("DirectViewId: 正在全局查找 ID '${strategy.viewId}'")
+
+                        val targetNode =
+                                nodes.firstOrNull { node ->
+                                    val nodeId = node.viewId ?: return@firstOrNull false
+                                    if (strategy.useExactMatch) {
+                                        nodeId == strategy.viewId
+                                    } else {
+                                        nodeId.endsWith(strategy.viewId)
+                                    }
+                                }
+
+                        targetNode?.text?.trim()?.takeIf { it.isNotBlank() }
+                    }
                 }
 
         Timber.d("策略应用结果: '$result'")

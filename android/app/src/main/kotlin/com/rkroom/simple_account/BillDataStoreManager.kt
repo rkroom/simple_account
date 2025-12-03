@@ -106,8 +106,19 @@ class BillDataStoreManager private constructor(private val context: Context) {
             val index = currentBills.indexOfFirst { it.id == billData.id }
 
             if (index != -1) {
-                currentBills[index] = billData
-                Timber.i("BillStore: 根据 ID 更新记录: ${billData.id}")
+                val oldBill = currentBills[index]
+
+                val mergedBill =
+                        oldBill.copy(
+                                content = billData.content ?: oldBill.content,
+                                payment = billData.payment ?: oldBill.payment,
+                                packageName = billData.packageName,
+                                postTime = oldBill.postTime,
+                                appName = billData.appName
+                        )
+
+                currentBills[index] = mergedBill
+                Timber.i("BillStore: 根据 ID 合并更新记录: ${billData.id}")
             } else {
                 currentBills.add(billData)
                 Timber.i("BillStore: 新增记录: ${billData.id}")
