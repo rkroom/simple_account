@@ -45,6 +45,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   List<PackageConfig> _abAllowedPackages = [];
   List<PackageConfig> _nlAllowedPackages = [];
 
+  String _logLevel = 'OFF';
+
   @override
   void initState() {
     super.initState();
@@ -94,6 +96,10 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       final enableWindowChange =
           await NativeMethodChannel.instance.getEnableWindowContentChange();
 
+      final String? logLevelName =
+          await NativeMethodChannel.instance.getLogLevel();
+      final String resolvedLogLevel = logLevelName ?? 'OFF';
+
       final savedAcc = await ConfigService().getSavedAccConfig();
       final savedNl = await ConfigService().getSavedNlConfig();
 
@@ -138,6 +144,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
         _abAllowedPackages = abPackages;
         _nlAllowedPackages = nlPackages;
+        _logLevel = resolvedLogLevel;
+
         _isLoading = false;
       });
     } catch (e) {
@@ -628,6 +636,29 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               trailing: IconButton(
                 icon: const Icon(Icons.access_time),
                 onPressed: _pickScheduleTaskTime,
+              ),
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('选择日志级别'),
+              trailing: DropdownButton<String>(
+                value: _logLevel,
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 'OFF', child: Text('OFF（关闭日志）')),
+                  DropdownMenuItem(value: 'ERROR', child: Text('ERROR')),
+                  DropdownMenuItem(value: 'WARN', child: Text('WARN')),
+                  DropdownMenuItem(value: 'INFO', child: Text('INFO')),
+                  DropdownMenuItem(value: 'DEBUG', child: Text('DEBUG')),
+                  DropdownMenuItem(value: 'VERBOSE', child: Text('VERBOSE')),
+                ],
+                onChanged: (String? value) async {
+                  if (value == null) return;
+                  setState(() {
+                    _logLevel = value;
+                  });
+                  await NativeMethodChannel.instance.putLogLevel(value);
+                },
               ),
             ),
             const Divider(),

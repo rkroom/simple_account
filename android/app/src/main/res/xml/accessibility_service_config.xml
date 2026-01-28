@@ -1,8 +1,9 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeAllMask"
-    android:accessibilityFeedbackType="feedbackSpoken"
-    android:notificationTimeout="100"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric" 
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
     android:description="@string/accessibility_service_description"
-    android:settingsActivity="com.rkroom.simple_account/.MyAccessibilitySettingsActivity" 
-    android:packageNames="com.eg.android.AlipayGphone,com.tencent.mm,com.jingdong.app.mall" />
+    android:settingsActivity="com.rkroom.simple_account.MyAccessibilitySettingsActivity"
+    android:packageNames="com.eg.android.AlipayGphone,com.tencent.mm,com.jingdong.app.mall,com.taobao.taobao,com.tmall.wireless" />

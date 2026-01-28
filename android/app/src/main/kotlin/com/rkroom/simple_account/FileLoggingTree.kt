@@ -10,8 +10,10 @@ import java.util.Locale
 import timber.log.Timber
 
 class FileLoggingTree(context: Context) : Timber.Tree() {
-
     private val appContext = context.applicationContext
+
+    // 动态控制写入文件的最低级别
+    @Volatile var minLogLevel: AppLogLevel = AppLogLevel.DEFAULT
 
     private val logDirectory: File? by lazy {
         appContext.getExternalFilesDirs(null).firstNotNullOfOrNull {
@@ -19,17 +21,16 @@ class FileLoggingTree(context: Context) : Timber.Tree() {
         }
     }
 
-    companion object {
-        private const val LOG_FILE_NAME = "debug.log"
-        private const val DATE_FORMAT = "yyyy-MM-dd HH:mm:ss.SSS"
-    }
-
     override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+        // 二次拦截：虽然 AppLog.kt 拦截了一次，但 Timber 内部或其他库可能直接调用 Timber.log
+        // 这里确保只有符合级别的日志才落盘
+        if (priority < minLogLevel.priority) return
+
         try {
             val storageDir = logDirectory ?: return
-
-            val logFile = File(storageDir, LOG_FILE_NAME)
-            val logTimeStamp = SimpleDateFormat(DATE_FORMAT, Locale.getDefault()).format(Date())
+            val logFile = File(storageDir, "debug.log")
+            val timestamp =
+                    SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
 
             val priorityTag =
                     when (priority) {
@@ -43,14 +44,15 @@ class FileLoggingTree(context: Context) : Timber.Tree() {
                     }
 
             FileWriter(logFile, true).use { writer ->
-                writer.append("$logTimeStamp $priorityTag/${tag ?: "NoTag"}: $message\n")
+                writer.append("$timestamp $priorityTag/${tag ?: "NoTag"}: $message\n")
                 t?.let {
                     writer.append(it.stackTraceToString())
                     writer.append("\n")
                 }
             }
         } catch (e: Exception) {
-            Log.e("FileLogger", "Error while logging to file", e)
+            // 这里使用 Android 原生 Log
+            Log.e("FileLogger", "写入文件日志失败", e)
         }
     }
 }

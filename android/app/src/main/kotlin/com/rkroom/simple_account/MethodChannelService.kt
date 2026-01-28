@@ -377,6 +377,39 @@ class MethodChannelService {
                                 result.error("INVALID_ARGUMENT", "参数 'value' 为空", null)
                             }
                         }
+                        "getLogLevel" -> {
+                            try {
+                                val level = configManager.getLogLevel()
+                                // 返回枚举名，例如 "DEBUG" / "INFO" / "OFF"
+                                result.success(level.name)
+                            } catch (e: Exception) {
+                                result.error("GET_LOG_LEVEL_FAILED", "获取日志级别失败: ${e.message}", null)
+                            }
+                        }
+                        "putLogLevel" -> {
+                            val levelName = call.argument<String>("level")
+                            if (levelName != null) {
+                                try {
+                                    val level =
+                                            try {
+                                                AppLogLevel.valueOf(levelName)
+                                            } catch (_: IllegalArgumentException) {
+                                                AppLogLevel.DEFAULT
+                                            }
+                                    AppLogConfig.currentLogLevel = level.priority
+                                    configManager.putLogLevel(level)
+                                    result.success(null)
+                                } catch (e: Exception) {
+                                    result.error(
+                                            "PUT_LOG_LEVEL_FAILED",
+                                            "保存日志级别失败: ${e.message}",
+                                            null
+                                    )
+                                }
+                            } else {
+                                result.error("INVALID_ARGUMENT", "参数 'level' 为空", null)
+                            }
+                        }
                         else -> result.notImplemented()
                     }
                 }

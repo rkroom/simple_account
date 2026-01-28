@@ -474,6 +474,69 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
     });
   }
 
+  void _validateRuleStructure(Map<String, dynamic> rule) {
+    if (rule['contentRules'] != null && rule['contentRules'] is! List) {
+      throw Exception('contentRules 必须是数组');
+    }
+    if (rule['paymentRules'] != null && rule['paymentRules'] is! List) {
+      throw Exception('paymentRules 必须是数组');
+    }
+    if (rule.containsKey('maxContentTriggerTimes') &&
+        rule['maxContentTriggerTimes'] is! int) {
+      throw Exception('maxContentTriggerTimes 必须是整数');
+    }
+
+    for (var key in ['contentRules', 'paymentRules']) {
+      if (rule.containsKey(key)) {
+        final list = rule[key] as List;
+        for (var i = 0; i < list.length; i++) {
+          final item = list[i];
+          if (item is! Map) throw Exception('$key 第 ${i + 1} 项必须是对象');
+
+          if (item.containsKey('keywords')) {
+            if (item['keywords'] is! List) {
+              throw Exception('$key 第 ${i + 1} 项 keywords 必须是数组');
+            }
+          }
+
+          _validateStrategy(item['strategy'], '$key[$i]');
+        }
+      }
+    }
+  }
+
+  void _validateStrategy(dynamic strategy, String path) {
+    if (strategy == null || strategy is! Map) {
+      throw Exception('$path: 缺少有效的 strategy 对象');
+    }
+
+    final type = strategy['type'];
+    final validTypes = const [
+      'SimpleOffset',
+      'ConditionalOffset',
+      'Concatenate',
+      'DirectViewId',
+      'ExtractByViewId',
+    ];
+
+    if (!validTypes.contains(type)) {
+      throw Exception('$path: 未知的策略类型 "$type"');
+    }
+
+    if (type == 'DirectViewId' || type == 'ExtractByViewId') {
+      if (strategy['viewId'] == null ||
+          strategy['viewId'].toString().trim().isEmpty) {
+        throw Exception('$path: $type 策略必须包含非空的 viewId');
+      }
+    }
+
+    if (type == 'SimpleOffset') {
+      if (strategy['offset'] == null || strategy['offset'] is! int) {
+        throw Exception('$path: SimpleOffset 策略必须包含整数类型的 offset');
+      }
+    }
+  }
+
   Future<void> _showRuleEditorDialog(String packageName) async {
     final rulesForPackage =
         _extractionRules
@@ -486,24 +549,21 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
         {
           "ruleName": "Rule for $packageName",
           "packageName": packageName,
-          "activityName": "",
-          "continueOnContentFailure": true,
-          "allowContentChangeTrigger": true,
-          "triggerOnEmptyNodes": false,
-          "preFilterByKeywords": false,
+          "activityName": "在此处填写activityName，支持后缀匹配",
           "contentRules": [
             {
-              "keywords": ["请填写关键字"],
+              "keywords": ["支付成功", "交易成功"],
               "strategy": {
+                // 可用类型: SimpleOffset, ConditionalOffset, Concatenate, DirectViewId, ExtractByViewId
                 "type": "ExtractByViewId",
-                "viewId": "在此处填写控件ID(如: amount_text)",
-                "useExactMatch": false,
+                "viewId": "pkgname:id/view_id",
+                "useExactMatch": true,
               },
             },
           ],
           "paymentRules": [
             {
-              "keywords": ["请填写关键字"],
+              "keywords": ["付款方式", "交易方式"],
               "strategy": {
                 "type": "SimpleOffset",
                 "offset": 1,
@@ -511,6 +571,15 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
               },
             },
           ],
+          "continueOnContentFailure": false,
+          "triggerOnEmptyNodes": false,
+          "emptyNodeTriggerCooldownMs": 120000,
+          "preFilterByKeywords": false,
+          "allowContentChangeTrigger": false,
+          "hasPaymentInfo": true,
+          "maxContentTriggerTimes": 2,
+          "dynamicRetryTimes": 0,
+          "dynamicRetryIntervalMs": 1000,
         },
       ];
       initialText = _jsonEncoder.convert(defaultRule);
@@ -567,6 +636,14 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
                         (activityName is! String) ||
                         activityName.trim().isEmpty) {
                       throw Exception('第 ${i + 1} 项规则缺少有效的 activityName 字段。');
+                    }
+
+                    try {
+                      _validateRuleStructure(map);
+                    } catch (e) {
+                      throw Exception(
+                        '第 ${i + 1} 项规则校验失败: ${e.toString().replaceAll("Exception: ", "")}',
+                      );
                     }
 
                     newRulesForPackage.add(map);

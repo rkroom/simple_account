@@ -11,7 +11,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import timber.log.Timber
 
 class MyNotificationListenerService : NotificationListenerService() {
 
@@ -54,7 +53,7 @@ class MyNotificationListenerService : NotificationListenerService() {
                         payment = null,
                         appName = appName
                 )
-        BillingRepository.saveBill(applicationContext, notificationData)
+        BillDataStoreManager.getInstance(applicationContext).saveBillAsync(notificationData)
     }
 
     private suspend fun handleNotification(
@@ -92,7 +91,7 @@ class MyNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        Timber.i("通知监听服务已断开")
+        AppLog.i { "通知监听服务已断开" }
         val componentName = ComponentName(this, MyNotificationListenerService::class.java)
         try {
             requestRebind(componentName)
@@ -104,9 +103,9 @@ class MyNotificationListenerService : NotificationListenerService() {
     private fun observeNotificationConfig() {
         serviceScope.launch {
             configManager.notificationConfigFlow.collect { config ->
-                Timber.d(
-                        "通知配置更新: 包名数量=${config.allowedPackages.size}, 关键字数量=${config.keywords.size}"
-                )
+                AppLog.d {
+                    "通知配置更新: 包名数量=${config.allowedPackages.size}, 关键字数量=${config.keywords.size}"
+                }
                 cachedAllowPackageName = config.allowedPackages
                 cachedAllowKeywords = config.keywords
             }

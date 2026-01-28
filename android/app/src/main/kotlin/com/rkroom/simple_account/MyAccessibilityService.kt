@@ -13,31 +13,42 @@ import io.flutter.BuildConfig
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
-import timber.log.Timber
-
-// contentDescription，对于复杂的页面可考虑使用
-data class NodeData(val windowId: Int, val viewId: String?, val text: String)
 
 /**
  * 缓存
+ * @param windowId 窗口ID (系统分配的唯一ID)
  * @param isComplete 是否已完成提取
  * @param recordId 数据库 ID
+ * @param timestamp 首次创建时的时间戳
+ * @param lastEmptyTriggerTime 上次触发 EmptyNode 规则的时间戳 (0 表示未触发过)
  */
 private data class PageCacheEntry(
-        val hash: Int,
-        val timestamp: Long,
+        // 屏幕旋转、系统深色模式切换等 Configuration Change 会导致 Activity 重建，WindowID 会发生改变
+        // 特殊情况会导致重复记录，暂不处理
+        val windowId: Int,
         val isComplete: Boolean,
-        val recordId: String
+        val recordId: String,
+        val timestamp: Long,
+        val lastEmptyTriggerTime: Long = 0L
 )
 
-private data class CachedRuleResult(val rule: ExtractionRule?)
+// 对同一个 PageIdentifier 的全部规则做一次“路径画像”
+// - rules: 实际匹配到的 ExtractionRule 列表（原来缓存的内容）
+// - hasAnyLazyRule: 是否存在需要 LazyDFS 的规则（非 FastPath 且非 triggerOnEmptyNodes）
+// - hasAnyNonExactViewId: 是否存在 ExtractByViewId(useExactMatch = false) 的规则
+private data class PageRuleBundle(
+        val rules: List<ExtractionRule>,
+        val hasAnyLazyRule: Boolean,
+        val hasAnyNonExactViewId: Boolean
+)
 
 class MyAccessibilityService : AccessibilityService() {
+
+    private val TAG = "AccService"
 
     companion object {
         private const val PAGE_HASH_CACHE_SIZE = 100
         private const val RULE_CACHE_SIZE = 200
-        private const val TAG = "AccessibilityTracker"
         private const val DUMMY_PACKAGE_NAME = "com.example.nonexistent.package"
 
         fun isAccessibilityServiceEnabled(context: Context): Boolean {
@@ -56,29 +67,38 @@ class MyAccessibilityService : AccessibilityService() {
 
             val isEnabled =
                     enabledServices.any { serviceInfo -> serviceInfo.id == expectedServiceId }
-            Timber.d("无障碍服务是否启用: $isEnabled")
+            AppLog.d { "无障碍服务是否启用: $isEnabled" }
             return isEnabled
         }
     }
 
     @Volatile private var currentPageId: PageIdentifier? = null // 当前页面ID (包名/类名)
-    private val lastHashByPage = LruCache<PageIdentifier, PageCacheEntry>(PAGE_HASH_CACHE_SIZE)
-    private val ruleCache = LruCache<PageIdentifier, CachedRuleResult>(RULE_CACHE_SIZE)
+    @Volatile private var currentWindowId: Int = -1
+    // 如果在多线程情况下崩溃可以考虑synchronized封装
+    private val lastCacheByPage = LruCache<PageIdentifier, PageCacheEntry>(PAGE_HASH_CACHE_SIZE)
+    private val ruleCache = LruCache<PageIdentifier, PageRuleBundle>(RULE_CACHE_SIZE)
     private val pageTriggerCounts = ConcurrentHashMap<PageIdentifier, Int>()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
     @Volatile private var cachedExtractionRules: Map<String, List<ExtractionRule>> = emptyMap()
     private val windowChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
     private val contentChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
-    @Volatile private var transactionCooldownMs: Long = 120000L
     @Volatile private var windowChangeDebounceMs: Long = 500L
     @Volatile private var contentChangeDebounceMs: Long = 500L
     @Volatile private var isContentChangeEnabled: Boolean = false
-    @Volatile private var maxContentTriggerTimes: Int = 2
+
+    private fun cancelAndClearJobs(map: ConcurrentHashMap<PageIdentifier, Job>, reason: String) {
+        map.values.forEach { job ->
+            try {
+                job.cancel(reason)
+            } catch (_: Exception) {}
+        }
+        map.clear()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Timber.i("无障碍服务已连接。")
+        AppLog.i { "无障碍服务已连接。" }
         observeServiceConfig()
     }
 
@@ -88,11 +108,10 @@ class MyAccessibilityService : AccessibilityService() {
 
             // 监听 Flow
             configManager.serviceConfigFlow.collect { config ->
-                Timber.d("配置发生变更，正在刷新 Service 缓存...")
+                AppLog.d { "配置发生变更，正在刷新 Service 缓存..." }
 
                 cachedAllowedPackageNames = config.allowedPackageNames
                 cachedExtractionRules = config.extractionRules
-                transactionCooldownMs = config.transactionCooldownMs
                 windowChangeDebounceMs = config.windowChangeDebounceMs
                 contentChangeDebounceMs = config.contentChangeDebounceMs
                 isContentChangeEnabled = config.isContentChangeEnabled
@@ -100,15 +119,19 @@ class MyAccessibilityService : AccessibilityService() {
                 // 清空规则查找缓存，因为规则可能变了
                 ruleCache.evictAll()
 
+                // 清空页面缓存，避免“已完成”的旧状态影响新规则
+                lastCacheByPage.evictAll()
+
                 // 更新 ServiceInfo (必须在主线程执行)
                 withContext(Dispatchers.Main) { updateServiceInfo(config) }
 
-                Timber.i("配置刷新完成。监听包数量: ${config.allowedPackageNames.size}")
+                AppLog.i { "配置刷新完成。监听包数量: ${config.allowedPackageNames.size}" }
             }
         }
     }
 
     private fun updateServiceInfo(config: ServiceConfig) {
+        AppLog.d { "正在更新服务信息 (启用页面内容变更监测: ${config.isContentChangeEnabled})" }
         val currentServiceInfo = serviceInfo ?: AccessibilityServiceInfo()
         currentServiceInfo.apply {
             eventTypes =
@@ -127,7 +150,7 @@ class MyAccessibilityService : AccessibilityService() {
 
             packageNames =
                     if (config.allowedPackageNames.isEmpty()) {
-                        arrayOf("com.example.nonexistent.package")
+                        arrayOf(DUMMY_PACKAGE_NAME)
                     } else {
                         config.allowedPackageNames.toTypedArray()
                     }
@@ -136,408 +159,566 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        // 降低日志级别，避免 TYPE_WINDOW_CONTENT_CHANGED 刷屏
-        // Timber.v(
-        //        "收到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)},
-        // pkg=${event.packageName}, class=${event.className}"
-        // )
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowChange(event)
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (isContentChangeEnabled) {
-                    handleContentChange(event)
-                }
+        val packageName = event.packageName?.toString() ?: return
+        val eventType = event.eventType
+        val eventWindowId = event.windowId
+
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            currentWindowId = eventWindowId
+
+            val className = event.className?.toString() ?: AppConstants.UNKNOWN_CLASS
+            val newPageId = PageIdentifier(packageName, className)
+
+            val lastEntry = lastCacheByPage.get(newPageId)
+            if (lastEntry != null && lastEntry.windowId == eventWindowId && lastEntry.isComplete) {
+                return
             }
+
+            AppLog.d {
+                "[$TAG] WindowStateChanged: $packageName / $className (WinID: $eventWindowId)"
+            }
+            handleWindowStateChanged(newPageId)
+        } else if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            if (eventWindowId != currentWindowId) {
+                return
+            }
+
+            val activePageId = currentPageId ?: return
+            if (activePageId.packageName != packageName) return
+            if (!isContentChangeEnabled) return
+
+            // AppLog.v { "[$TAG] ContentChanged: WinID: $eventWindowId" }
+            handleWindowContentChanged(event, activePageId)
         }
     }
 
-    private fun getOrFindRule(pageIdentifier: PageIdentifier): ExtractionRule? {
+    // 只触发一次 ContentChange 且 source 不是目标 view”的极端情况会漏账单
+    private fun quickCheckEventMatchesRules(
+            event: AccessibilityEvent,
+            rules: List<ExtractionRule>
+    ): Boolean {
+        if (rules.isEmpty()) return false
 
-        val cachedResult = ruleCache.get(pageIdentifier)
-        if (cachedResult != null) {
-            return cachedResult.rule
+        val interestingKeywords = mutableSetOf<String>()
+        val interestingViewIds = mutableSetOf<String>()
+
+        rules.forEach { rule ->
+            (rule.contentRules + rule.paymentRules).forEach { detail ->
+                interestingKeywords.addAll(detail.keywords)
+                when (val strategy = detail.strategy) {
+                    is DirectViewId -> interestingViewIds.add(strategy.viewId)
+                    is ExtractByViewId -> interestingViewIds.add(strategy.viewId)
+                    else -> {}
+                }
+            }
         }
 
-        val rulesForPackage = cachedExtractionRules[pageIdentifier.packageName]
+        if (interestingKeywords.isNotEmpty()) {
+            val eventTextList = event.text
+            for (text in eventTextList) {
+                val s = text.toString()
+                if (interestingKeywords.any { s.contains(it, ignoreCase = true) }) {
+                    AppLog.v { "[$TAG] 快速预检: Event文本命中 -> $s" }
+                    return true
+                }
+            }
+        }
 
-        val matchedRule =
-                rulesForPackage?.find { rule ->
-                    pageIdentifier.className.endsWith(rule.activityName, ignoreCase = true)
+        val sourceNode = event.source ?: return false
+        return sourceNode.use { node ->
+            // 只做浅层检查，不遍历子节点
+            if (interestingViewIds.isNotEmpty()) {
+                val nodeId = node.viewIdResourceName
+                if (nodeId != null &&
+                                interestingViewIds.any { viewId ->
+                                    if (viewId.contains(":id/")) nodeId == viewId
+                                    else nodeId.endsWith(viewId)
+                                }
+                ) {
+                    AppLog.v { "[$TAG] 快速预检: Event节点ID命中 -> $nodeId" }
+                    return@use true
+                }
+            }
+            if (interestingKeywords.isNotEmpty()) {
+                val nodeText = node.text?.toString()
+                if (nodeText != null &&
+                                interestingKeywords.any { nodeText.contains(it, ignoreCase = true) }
+                ) {
+                    AppLog.v { "[$TAG] 快速预检: Event节点文本命中 -> $nodeText" }
+                    return@use true
+                }
+                val nodeDesc = node.contentDescription?.toString()
+                if (nodeDesc != null &&
+                                interestingKeywords.any { nodeDesc.contains(it, ignoreCase = true) }
+                ) {
+                    AppLog.v { "[$TAG] 快速预检: Event描述命中 -> $nodeDesc" }
+                    return@use true
+                }
+            }
+            false
+        }
+    }
+
+    private fun getRootInWindow(targetWindowId: Int): AccessibilityNodeInfo? {
+        val windows = this.windows
+        val targetWindow = windows.find { it.id == targetWindowId }
+        return targetWindow?.root
+    }
+
+    /** 按 PageIdentifier 缓存/获取所有匹配该 Activity 的规则（按配置顺序） */
+    private fun getOrFindRuleBundle(pageIdentifier: PageIdentifier): PageRuleBundle {
+        ruleCache.get(pageIdentifier)?.let {
+            return it
+        }
+
+        val allRulesForPackage = cachedExtractionRules[pageIdentifier.packageName].orEmpty()
+
+        val matched =
+                allRulesForPackage.filter { rule ->
+                    rule.activityName.isNotBlank() &&
+                            pageIdentifier.className.endsWith(rule.activityName, ignoreCase = true)
                 }
 
-        ruleCache.put(pageIdentifier, CachedRuleResult(matchedRule))
+        // 规则层面的路径画像（对“当前页面下匹配到的所有规则”做一次统计）
+        val hasAnyNonExactViewId =
+                matched.any { rule ->
+                    (rule.contentRules + rule.paymentRules).any {
+                        (it.strategy as? ExtractByViewId)?.useExactMatch == false
+                    }
+                }
+        val disablePrefilterPage = hasAnyNonExactViewId
 
-        return matchedRule
+        val hasAnyLazyRule =
+                matched.any { rule ->
+                    if (rule.triggerOnEmptyNodes) return@any false
+                    val effectivePrefilter = rule.preFilterByKeywords && !disablePrefilterPage
+                    effectivePrefilter || !Extractor.isFastPathRule(rule)
+                }
+
+        val bundle =
+                PageRuleBundle(
+                        rules = matched,
+                        hasAnyLazyRule = hasAnyLazyRule,
+                        hasAnyNonExactViewId = hasAnyNonExactViewId
+                )
+
+        // 就算 rules 为空也缓存，避免后续重复计算
+        ruleCache.put(pageIdentifier, bundle)
+        return bundle
+    }
+
+    private suspend fun performExtraction(
+            pageId: PageIdentifier,
+            rootNode: AccessibilityNodeInfo,
+            rule: ExtractionRule,
+            windowId: Int,
+            isContentChange: Boolean,
+            isFinalAttempt: Boolean,
+            nodeProvider: Extractor.LazyNodeProvider? = null,
+            disablePrefilter: Boolean = false,
+    ): Boolean {
+        if (rootNode.packageName?.toString() != pageId.packageName) return false
+        AppLog.d { "[$TAG] 执行提取逻辑 -> WindowID: $windowId" }
+
+        val result =
+                Extractor.extract(
+                        pageIdentifier = pageId,
+                        root = rootNode,
+                        matchedRule = rule,
+                        isContentChange = isContentChange,
+                        isFinalAttempt = isFinalAttempt,
+                        sharedProvider = nodeProvider,
+                        disablePrefilter = disablePrefilter,
+                )
+        if (result != null) {
+            withContext(Dispatchers.IO) {
+                saveIfNew(
+                        content = result.first,
+                        payment = result.second,
+                        pageIdentifier = pageId,
+                        rule = rule,
+                        currentWindowId = windowId,
+                        updateEmptyTriggerTime = null
+                )
+            }
+            return true
+        }
+        return false
     }
 
     // 如遇线程问题导致的崩溃，可考虑在防抖结束之后切换到主线程生成节点快照，然后在后台线程处理
-    private fun handleWindowChange(event: AccessibilityEvent) {
-        val packageName = event.packageName?.toString() ?: AppConstants.UNKNOWN_PACKAGE
-        val className = event.className?.toString() ?: AppConstants.UNKNOWN_CLASS
+    private fun handleWindowStateChanged(newPageId: PageIdentifier) {
+        val oldPageId = currentPageId
+        currentPageId = newPageId
 
-        if (className == AppConstants.UNKNOWN_CLASS) return
+        if (oldPageId != null && oldPageId != newPageId) {
+            windowChangeDebounceJobs[oldPageId]?.cancel("Page changed")
+            windowChangeDebounceJobs.remove(oldPageId)
 
-        val pageIdentifier = PageIdentifier(packageName, className)
-        this.currentPageId = pageIdentifier
-        pageTriggerCounts.clear()
-        pageTriggerCounts[pageIdentifier] = 0
+            contentChangeDebounceJobs[oldPageId]?.cancel("Page changed")
+            contentChangeDebounceJobs.remove(oldPageId)
 
-        // 查找规则
-        val matchingRule = getOrFindRule(pageIdentifier) ?: return
-
-        Timber.v(
-                "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
-        )
-
-        // 检查是否在冷却时间内 (针对空节点触发)
-        if (matchingRule.triggerOnEmptyNodes) {
-            val lastEntry = lastHashByPage.get(pageIdentifier)
-            if (lastEntry != null) {
-                val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
-                if (timeDiff < this.transactionCooldownMs) return
-            }
+            pageTriggerCounts.remove(oldPageId)
         }
 
-        contentChangeDebounceJobs[pageIdentifier]?.cancel()
-        windowChangeDebounceJobs[pageIdentifier]?.cancel()
+        pageTriggerCounts[newPageId] = 0
 
-        val newJob =
-                serviceScope.launch {
-                    delay(windowChangeDebounceMs)
-
-                    // 如果 this.currentPageId 变成了其他页面，当前任务作废
-                    if (this@MyAccessibilityService.currentPageId != pageIdentifier) {
-                        return@launch
-                    }
-
-                    // 提取
-                    executeExtraction(pageIdentifier, matchingRule, isContentChange = false)
-                    incrementTriggerCount(pageIdentifier)
-                }
-
-        windowChangeDebounceJobs[pageIdentifier] = newJob
-
-        newJob.invokeOnCompletion { windowChangeDebounceJobs.remove(pageIdentifier, newJob) }
-    }
-
-    // 极端情况可考虑添加熔断
-    private fun handleContentChange(event: AccessibilityEvent) {
-        val currentId = currentPageId ?: return
-        val packageName = event.packageName?.toString() ?: return
-
-        if (packageName != currentId.packageName) return
-
-        val matchingRule = getOrFindRule(currentId) ?: return
-
-        if (!matchingRule.allowContentChangeTrigger) return
-
-        val lastEntry = lastHashByPage.get(currentId)
-        if (lastEntry != null && lastEntry.isComplete) {
-            return
-        }
-
-        val currentCount = pageTriggerCounts[currentId] ?: 0
-        if (currentCount >= maxContentTriggerTimes) {
-            return
-        }
-
-        if (lastEntry != null) {
-            val timeDiff = System.currentTimeMillis() - lastEntry.timestamp
-            // 如果冷却期未过 且 数据已完整 -> 拦截
-            if (timeDiff < transactionCooldownMs && lastEntry.isComplete) {
+        contentChangeDebounceJobs[newPageId]?.let { job ->
+            if (job.isActive) {
+                AppLog.d { "[$TAG] 互斥避让: 检测到 ContentChange 正在运行，WindowState 放弃执行。" }
                 return
             }
         }
 
-        if (windowChangeDebounceJobs.containsKey(currentId)) return
+        val bundle = getOrFindRuleBundle(newPageId)
+        val rules = bundle.rules
+        if (rules.isEmpty()) return
 
-        Timber.v(
-                "匹配到无障碍事件: type=${AccessibilityEvent.eventTypeToString(event.eventType)}, pkg=${event.packageName}, class=${event.className}"
-        )
+        windowChangeDebounceJobs[newPageId]?.cancel()
+        val job =
+                serviceScope.launch {
+                    try {
+                        delay(windowChangeDebounceMs)
+                        if (currentPageId != newPageId) return@launch
 
-        if (windowChangeDebounceJobs.containsKey(currentId)) {
-            Timber.v("页面 ${currentId.className} 正在处理窗口事件，跳过内容检测。")
+                        // 以页面为单位的重试次数：取该页面所有规则中的最大 dynamicRetryTimes
+                        val maxDynamicRetry = rules.maxOfOrNull { it.dynamicRetryTimes } ?: 0
+                        val maxAttempts = 1 + maxDynamicRetry
+                        var attempt = 0
+                        var extractionSuccess = false
+
+                        val hasLazyRule = bundle.hasAnyLazyRule
+
+                        while (attempt < maxAttempts && !extractionSuccess) {
+                            val isFinalAttempt = attempt >= maxAttempts - 1
+                            if (attempt > 0) {
+                                val retryInterval =
+                                        rules.maxOfOrNull { it.dynamicRetryIntervalMs } ?: 1000L
+                                delay(retryInterval)
+                                if (currentPageId != newPageId || !isActive) break
+                            }
+
+                            val root =
+                                    withContext(Dispatchers.Main) {
+                                        try {
+                                            if (currentPageId != newPageId) null
+                                            else getRootInWindow(currentWindowId)
+                                        } catch (e: Exception) {
+                                            null
+                                        }
+                                    }
+                                            ?: return@launch
+
+                            val currentWindowId = root.windowId
+                            val nodeProvider =
+                                    if (hasLazyRule) Extractor.LazyNodeProvider(root) else null
+
+                            try {
+                                val lastEntry = lastCacheByPage.get(newPageId)
+                                if (lastEntry != null &&
+                                                lastEntry.windowId == currentWindowId &&
+                                                lastEntry.isComplete
+                                ) {
+                                    AppLog.d { "[$TAG] 防抖后检查: 页面已完成，跳过。" }
+                                    return@launch
+                                }
+
+                                // 依次尝试每一条规则
+                                for (rule in rules) {
+                                    if (rule.triggerOnEmptyNodes) {
+                                        val now = System.currentTimeMillis()
+                                        val cooldown = rule.emptyNodeTriggerCooldownMs
+                                        val lastTriggerTime = lastEntry?.lastEmptyTriggerTime ?: 0L
+
+                                        if (cooldown > 0 && lastTriggerTime > 0L) {
+                                            val timeDiff = now - lastTriggerTime
+                                            if (timeDiff < cooldown) {
+                                                AppLog.d {
+                                                    "EmptyNode冷却拦截: ${newPageId.className} " +
+                                                            "(剩余 ${cooldown - timeDiff}ms, WindowID: $currentWindowId)"
+                                                }
+                                                // 该规则跳过，尝试下一条
+                                                continue
+                                            }
+                                        }
+
+                                        AppLog.d {
+                                            "EmptyNode触发: rule=${rule.ruleName}, WinID: $currentWindowId"
+                                        }
+
+                                        val staticContent =
+                                                buildStaticContentForEmptyNodeTrigger(rule)
+                                        val contentToSave = staticContent ?: ""
+                                        val paymentToSave = ""
+
+                                        withContext(Dispatchers.IO) {
+                                            saveIfNew(
+                                                    content = contentToSave,
+                                                    payment = paymentToSave,
+                                                    pageIdentifier = newPageId,
+                                                    rule = rule,
+                                                    currentWindowId = currentWindowId,
+                                                    updateEmptyTriggerTime = now
+                                            )
+                                        }
+                                        extractionSuccess = true
+                                        break
+                                    } else {
+                                        val success =
+                                                performExtraction(
+                                                        pageId = newPageId,
+                                                        rootNode = root,
+                                                        rule = rule,
+                                                        windowId = currentWindowId,
+                                                        isContentChange = false,
+                                                        isFinalAttempt = isFinalAttempt,
+                                                        nodeProvider = nodeProvider,
+                                                        disablePrefilter =
+                                                                bundle.hasAnyNonExactViewId,
+                                                )
+                                        if (success) {
+                                            AppLog.d {
+                                                "[$TAG] WindowState: 规则 ${rule.ruleName} 提取成功 (第 ${attempt + 1} 次尝试)"
+                                            }
+                                            extractionSuccess = true
+                                            break
+                                        } else {
+                                            AppLog.v {
+                                                "[$TAG] WindowState: 规则 ${rule.ruleName} 提取失败 (第 ${attempt + 1} 次尝试)"
+                                            }
+                                        }
+                                    }
+                                }
+                            } finally {
+                                try {
+                                    nodeProvider?.recycle()
+                                } catch (e: Exception) {}
+                                try {
+                                    root.recycle()
+                                } catch (e: Exception) {}
+                            }
+                            attempt++
+                        }
+                    } finally {
+                        windowChangeDebounceJobs.remove(newPageId)
+                    }
+                }
+
+        windowChangeDebounceJobs[newPageId] = job
+    }
+
+    private fun buildStaticContentForEmptyNodeTrigger(rule: ExtractionRule): String? {
+        val concatRule = rule.contentRules.firstOrNull { it.strategy is Concatenate }
+        val concat = concatRule?.strategy as? Concatenate ?: return null
+
+        if (concat.parts.isEmpty()) return null
+
+        val literalTexts = concat.parts.mapNotNull { (it as? Literal)?.text }
+        // 只在所有 part 都是 Literal 时才认为是“静态 Concatenate”
+        return if (literalTexts.size == concat.parts.size) {
+            literalTexts.joinToString(separator = "")
+        } else {
+            null
+        }
+    }
+
+    private fun handleWindowContentChanged(event: AccessibilityEvent, pageId: PageIdentifier) {
+        val lastEntry = lastCacheByPage.get(pageId)
+        if (lastEntry != null && lastEntry.windowId == currentWindowId && lastEntry.isComplete) {
+            // AppLog.v { "[$TAG] 窗口($currentWindowId)已提取完成，忽略 ContentChange" }
             return
         }
 
-        contentChangeDebounceJobs[currentId]?.cancel()
-        contentChangeDebounceJobs[currentId] =
-                serviceScope
-                        .launch {
-                            delay(contentChangeDebounceMs)
+        val bundle = getOrFindRuleBundle(pageId)
+        val allRules = bundle.rules
+        if (allRules.isEmpty()) return
 
-                            // 环境检查
-                            if (currentPageId != currentId) {
-                                return@launch
+        // ContentChange 只针对允许 allowContentChangeTrigger 且不使用 triggerOnEmptyNodes 的规则
+        val contentChangeRules =
+                allRules.filter { it.allowContentChangeTrigger && !it.triggerOnEmptyNodes }
+        if (contentChangeRules.isEmpty()) return
+
+        if (!quickCheckEventMatchesRules(event, contentChangeRules)) {
+            return
+        }
+
+        // 以页面为单位控制触发次数：取该页面所有 ContentChange 规则中的最大值
+        val maxTriggerTimesOfAll = contentChangeRules.maxOf { it.maxContentTriggerTimes }
+        val currentCountSnapshot = pageTriggerCounts[pageId] ?: 0
+
+        if (currentCountSnapshot >= maxTriggerTimesOfAll) {
+            AppLog.v { "[$TAG] 已达到最大触发次数限制 ($maxTriggerTimesOfAll)，忽略变更" }
+            return
+        }
+
+        // 抢占
+        windowChangeDebounceJobs[pageId]?.let { wsJob ->
+            if (wsJob.isActive) {
+                AppLog.d { "[$TAG] 抢占模式: 有效 ContentChange 触发，取消旧的 WindowState 任务。" }
+                wsJob.cancel("Preempted by valid ContentChange")
+            }
+        }
+
+        contentChangeDebounceJobs[pageId]?.cancel()
+        val job =
+                serviceScope.launch {
+                    try {
+                        delay(contentChangeDebounceMs)
+                        if (currentPageId != pageId) return@launch
+
+                        val root =
+                                withContext(Dispatchers.Main) {
+                                    try {
+                                        getRootInWindow(currentWindowId)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }
+
+                        if (root == null || root.windowId != currentWindowId) {
+                            root?.let {
+                                try {
+                                    it.recycle()
+                                } catch (e: Exception) {}
                             }
-                            // 超出次数则不再执行
-                            if ((pageTriggerCounts[currentId] ?: 0) >= maxContentTriggerTimes)
-                                    return@launch
+                            return@launch
+                        }
 
-                            // 再次检查冷却时间 (防止防抖期间 WindowChange 刚好完成提取)
-                            val freshLastEntry = lastHashByPage.get(currentId)
-                            if (freshLastEntry != null &&
-                                            (System.currentTimeMillis() - freshLastEntry.timestamp <
-                                                    transactionCooldownMs) &&
-                                            freshLastEntry.isComplete
+                        val currentWindowId = root.windowId
+
+                        val hasLazyRule = contentChangeRules.any { !Extractor.isFastPathRule(it) }
+                        val nodeProvider =
+                                if (hasLazyRule) Extractor.LazyNodeProvider(root) else null
+
+                        try {
+                            val freshLast = lastCacheByPage.get(pageId)
+                            if (freshLast != null &&
+                                            freshLast.windowId == currentWindowId &&
+                                            freshLast.isComplete
                             ) {
                                 return@launch
                             }
 
-                            // 执行提取
-                            executeExtraction(currentId, matchingRule, isContentChange = true)
-                            incrementTriggerCount(currentId)
-                        }
-                        .also { job ->
-                            job.invokeOnCompletion {
-                                if (contentChangeDebounceJobs[currentId] == job) {
-                                    contentChangeDebounceJobs.remove(currentId)
+                            AppLog.d { "[$TAG] ContentChange 防抖结束，触发提取. WinID: $currentWindowId" }
+
+                            val newCount = (pageTriggerCounts[pageId] ?: 0) + 1
+                            pageTriggerCounts[pageId] = newCount
+
+                            for (rule in contentChangeRules) {
+                                val isFinal = newCount >= rule.maxContentTriggerTimes
+
+                                val success =
+                                        performExtraction(
+                                                pageId = pageId,
+                                                rootNode = root,
+                                                rule = rule,
+                                                windowId = currentWindowId,
+                                                isContentChange = true,
+                                                isFinalAttempt = isFinal,
+                                                nodeProvider = nodeProvider,
+                                        )
+                                if (success) {
+                                    AppLog.d {
+                                        "[$TAG] ContentChange: 规则 ${rule.ruleName} 提取成功 (第 $newCount 次, Final=$isFinal)"
+                                    }
+                                    break
+                                } else {
+                                    AppLog.v {
+                                        "[$TAG] ContentChange: 规则 ${rule.ruleName} 提取失败 (第 $newCount 次, Final=$isFinal)"
+                                    }
                                 }
                             }
+                        } finally {
+                            try {
+                                nodeProvider?.recycle()
+                            } catch (e: Exception) {}
+                            try {
+                                root.recycle()
+                            } catch (e: Exception) {}
                         }
-    }
-
-    private suspend fun executeExtraction(
-            pageIdentifier: PageIdentifier,
-            matchingRule: ExtractionRule,
-            isContentChange: Boolean
-    ) {
-        val usePlaceholder = matchingRule.triggerOnEmptyNodes && !isContentChange
-        if (usePlaceholder) {
-            processCollectedNodes(pageIdentifier, emptyList(), matchingRule, isContentChange)
-            return
-        }
-
-        val rootNode = rootInActiveWindow ?: return
-        try {
-            if (rootNode.packageName?.toString() != pageIdentifier.packageName) {
-                Timber.w(
-                        "界面已切换 (预期: ${pageIdentifier.packageName}, 实际: ${rootNode.packageName})，放弃提取"
-                )
-                return
-            }
-
-            var fastPathSuccess = false
-
-            if (canUseFastDirectViewId(matchingRule)) {
-                Timber.d("规则符合纯 DirectViewId 策略，执行快速查找...")
-                val fastNodes = performFastDirectIdLookup(rootNode, matchingRule)
-
-                if (fastNodes.isNotEmpty()) {
-
-                    val result =
-                            withContext(Dispatchers.IO) {
-                                Extractor.extract(pageIdentifier, fastNodes, matchingRule)
-                            }
-
-                    if (result != null) {
-                        val (content, payment) = result
-
-                        if (content != null || payment != null) {
-                            Timber.i("快速 DirectViewId 查找命中。")
-                            processCollectedNodes(
-                                    pageIdentifier,
-                                    fastNodes,
-                                    matchingRule,
-                                    isContentChange
-                            )
-                            fastPathSuccess = true
-                        }
+                    } finally {
+                        contentChangeDebounceJobs.remove(pageId)
                     }
                 }
-            }
-
-            // 如果快速路径成功，直接返回，跳过下面的全量遍历
-            if (fastPathSuccess) return
-
-            // 前置关键字过滤
-            // 如果关键字多，则取消预过滤，直接进行一次全量遍历匹配
-            if (matchingRule.preFilterByKeywords) {
-                val allKeywords =
-                        (matchingRule.contentRules.flatMap { it.keywords } +
-                                        matchingRule.paymentRules.flatMap { it.keywords })
-                                .distinct()
-
-                if (allKeywords.isNotEmpty()) {
-                    val keywordFound =
-                            allKeywords.any { keyword ->
-                                rootNode.findAccessibilityNodeInfosByText(keyword)?.isNotEmpty() ==
-                                        true
-                            }
-                    if (!keywordFound) return
-                }
-            }
-
-            // 收集节点
-            val collectedNodes = mutableListOf<NodeData>()
-            traverseAndCollect(rootNode, collectedNodes)
-
-            if (collectedNodes.isNotEmpty()) {
-                processCollectedNodes(
-                        pageIdentifier,
-                        ArrayList(collectedNodes),
-                        matchingRule,
-                        isContentChange
-                )
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "提取过程发生异常")
-        } finally {
-            try {
-                rootNode.recycle()
-            } catch (e: IllegalStateException) {
-                // 忽略
-            }
-        }
+        contentChangeDebounceJobs[pageId] = job
     }
-
-    private fun traverseAndCollect(
-            node: AccessibilityNodeInfo?,
-            collectedNodes: MutableList<NodeData>
-    ) {
-        node ?: return
-
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.addLast(node)
-
-        val visitedNodes = mutableSetOf<AccessibilityNodeInfo>()
-
-        // IPC (跨进程) 调用，较为耗费性能
-        // val tempRect = android.graphics.Rect()
-
-        // 不处理不可见节点
-        while (stack.isNotEmpty()) {
-            val currentNode = stack.removeLast()
-
-            if (!visitedNodes.add(currentNode)) {
-                // recycle由系统管理，可以不手动回收。
-                currentNode.recycle()
-                continue
-            }
-
-            if (!currentNode.isVisibleToUser) {
-                currentNode.recycle()
-                continue
-            }
-
-            // IPC (跨进程) 调用，较为耗费性能
-            // currentNode.getBoundsInScreen(tempRect)
-            // if (tempRect.width() <= 0 || tempRect.height() <= 0) {
-            //    currentNode.recycle()
-            //    continue
-            // }
-
-            currentNode.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
-                collectedNodes.add(
-                        NodeData(currentNode.windowId, currentNode.viewIdResourceName, text)
-                )
-            }
-
-            for (i in (currentNode.childCount - 1) downTo 0) {
-                currentNode.getChild(i)?.let { childNode -> stack.addLast(childNode) }
-            }
-
-            // AccessibilityNodeInfo 对象由系统管理，可以不需要手动回收它们
-            if (currentNode !== node) {
-                try {
-                    currentNode.recycle()
-                } catch (e: IllegalStateException) {
-                    // 防御性捕获
-                }
-            }
-        }
-    }
-
-    private suspend fun processCollectedNodes(
-            pageIdentifierForProcessing: PageIdentifier,
-            nodesToProcess: List<NodeData>,
-            matchedRule: ExtractionRule,
-            isContentChange: Boolean
-    ) =
-            withContext(Dispatchers.IO) {
-                Timber.d(
-                        "在IO线程中处理节点: pageId=$pageIdentifierForProcessing, 节点数=${nodesToProcess.size}"
-                )
-
-                // 调用 Extractor.extract 方法，并传入 PageIdentifier 对象和对应的规则
-                val extractionResult =
-                        Extractor.extract(pageIdentifierForProcessing, nodesToProcess, matchedRule)
-
-                if (extractionResult != null) {
-                    val (content, payment) = extractionResult
-                    Timber.i(
-                            "提取成功: pageId=$pageIdentifierForProcessing, content='${content?.take(50)}...', payment='$payment'"
-                    )
-                    if (content != null || payment != null) {
-                        saveIfNew(
-                                content,
-                                payment,
-                                pageIdentifierForProcessing,
-                                matchedRule,
-                                isContentChange
-                        )
-                    }
-                } else {
-                    Timber.d("未从 pageId=$pageIdentifierForProcessing 中提取到任何内容。")
-                }
-            }
 
     private suspend fun saveIfNew(
             content: String?,
             payment: String?,
             pageIdentifier: PageIdentifier,
             rule: ExtractionRule,
-            isContentChange: Boolean
+            currentWindowId: Int,
+            updateEmptyTriggerTime: Long?
     ) {
-        if (content == null && payment == null) return
+        val lastEntry = lastCacheByPage.get(pageIdentifier)
 
-        val combinedHash = "c:${content}|p:${payment}".hashCode()
-        val currentTime = System.currentTimeMillis()
-        val lastEntry = lastHashByPage.get(pageIdentifier)
+        val usingEmptyNodeTrigger = rule.triggerOnEmptyNodes
 
-        // 是否饱和 (有 Content 且 (无需Payment 或 有Payment))
-        val isDataComplete = (content != null) && (!rule.hasPaymentInfo || payment != null)
+        // 当前数据是否“完整”
+        val isCurrentDataComplete =
+                if (usingEmptyNodeTrigger) {
+                    // triggerOnEmptyNodes：进入页面即视为一次“完整记录”，
+                    true
+                } else {
+                    // 常规提取：必须有内容（content可能仅为关键词本身），且满足支付方式要求才算完整
+                    !content.isNullOrEmpty() && (!rule.hasPaymentInfo || payment != null)
+                }
 
         var shouldSave = false
-        //  默认生成新 ID
-        var targetRecordId: String = UUID.randomUUID().toString()
+        var targetRecordId = UUID.randomUUID().toString()
+        var logReason = ""
+
+        val currentTime = System.currentTimeMillis()
+        val cacheTimestamp = lastEntry?.timestamp ?: currentTime
 
         if (lastEntry == null) {
-            //  首次记录 (使用新 ID)
+            // 首次出现该页面
             shouldSave = true
+            logReason = "New(无缓存)"
         } else {
-            val isCoolingDown = (currentTime - lastEntry.timestamp) < transactionCooldownMs
-
-            if (!isCoolingDown) {
-                // 新交易 (使用新 ID)
+            if (lastEntry.windowId != currentWindowId) {
+                // 同一 PageIdentifier 但 WindowID 变了，视为新页面
                 shouldSave = true
+                logReason = "New(WinID变动: ${lastEntry.windowId}->${currentWindowId})"
             } else {
-                // 冷却期内 -> 检查更新
-                if (lastEntry.hash != combinedHash) {
+                if (lastEntry.isComplete) {
+                    // 已经有“完整记录”，直接跳过
+                    AppLog.v { "Window($currentWindowId) 已标记为完整，跳过。" }
+                    return
+                } else {
+                    // 未完成，复用旧 recordId 做更新
                     shouldSave = true
-                    // 复用旧 ID，执行更新
                     targetRecordId = lastEntry.recordId
-                    Timber.d("数据更新，ID: $targetRecordId")
+                    logReason =
+                            if (isCurrentDataComplete) {
+                                "Update(数据补全)"
+                            } else {
+                                "Update(数据刷新)"
+                            }
                 }
             }
         }
 
         if (shouldSave) {
-            // 更新缓存
+            val newTriggerTime = updateEmptyTriggerTime ?: lastEntry?.lastEmptyTriggerTime ?: 0L
+
             val newEntry =
                     PageCacheEntry(
-                            hash = combinedHash,
-                            // 更新保持原时间戳
-                            timestamp =
-                                    if (lastEntry != null && lastEntry.recordId == targetRecordId)
-                                            lastEntry.timestamp
-                                    else currentTime,
-                            isComplete = isDataComplete,
-                            recordId = targetRecordId
+                            windowId = currentWindowId,
+                            isComplete = isCurrentDataComplete,
+                            recordId = targetRecordId,
+                            timestamp = cacheTimestamp,
+                            lastEmptyTriggerTime = newTriggerTime
                     )
-            lastHashByPage.put(pageIdentifier, newEntry)
+            lastCacheByPage.put(pageIdentifier, newEntry)
 
-            saveData(pageIdentifier, content, payment, targetRecordId)
+            if (content != null || payment != null || rule.triggerOnEmptyNodes) {
+                AppLog.i {
+                    "写入数据库 [$logReason]: ID=$targetRecordId, Win=$currentWindowId, 完整=$isCurrentDataComplete"
+                }
+                saveData(pageIdentifier, content, payment, targetRecordId, currentTime)
+            }
         }
     }
 
@@ -545,7 +726,8 @@ class MyAccessibilityService : AccessibilityService() {
             pageIdentifier: PageIdentifier,
             content: String?,
             payment: String?,
-            recordId: String
+            recordId: String,
+            timestamp: Long
     ) {
         val packageName = pageIdentifier.packageName
         val activityTitle = pageIdentifier.className
@@ -557,14 +739,13 @@ class MyAccessibilityService : AccessibilityService() {
         }
 
         if (BuildConfig.DEBUG) {
-            // Toast 必须在主线程上显示
             withContext(Dispatchers.Main) {
                 val toastMessage = "记录已保存，来自：$packageName"
                 Toast.makeText(this@MyAccessibilityService, toastMessage, Toast.LENGTH_SHORT).show()
             }
         }
 
-        Timber.d("saveData 方法被调用，准备构建 billData...")
+        AppLog.d { "saveData 方法被调用，准备构建 billData..." }
         val appName = AppUtils.getAppName(applicationContext, packageName)
 
         val data =
@@ -573,94 +754,26 @@ class MyAccessibilityService : AccessibilityService() {
                         title = pageIdentifier.className,
                         content = content,
                         packageName = packageName,
-                        postTime = System.currentTimeMillis(),
+                        postTime = timestamp,
                         payment = payment,
                         appName = appName
                 )
-        BillingRepository.saveBill(applicationContext, data)
-    }
-
-    private fun incrementTriggerCount(id: PageIdentifier) {
-        pageTriggerCounts[id] = (pageTriggerCounts[id] ?: 0) + 1
-    }
-
-    /** 判断是否可以使用快速查找路径。 仅当 ContentRules 和 PaymentRules 中的所有策略都是 DirectViewId 且为精确匹配时返回 true。 */
-    private fun canUseFastDirectViewId(rule: ExtractionRule): Boolean {
-        // 定义检查逻辑：必须是 DirectViewId 且 useExactMatch = true
-        fun isStrategyPureDirectId(details: List<RuleDetail>): Boolean {
-            if (details.isEmpty()) return true
-            return details.all { detail ->
-                val strategy = detail.strategy
-                strategy is DirectViewId && strategy.useExactMatch
-            }
-        }
-
-        // 必须同时满足 Content 和 Payment 规则
-        return isStrategyPureDirectId(rule.contentRules) &&
-                isStrategyPureDirectId(rule.paymentRules)
-    }
-
-    /** 执行快速 ViewId 查找。 直接调用系统 API findAccessibilityNodeInfosByViewId，避免遍历整个树。 */
-    private fun performFastDirectIdLookup(
-            rootNode: AccessibilityNodeInfo,
-            rule: ExtractionRule
-    ): List<NodeData> {
-        val collectedNodes = mutableListOf<NodeData>()
-        // 使用 Set 去重，避免同一个 ID 在 Content 和 Payment 中重复查找
-        val targetViewIds = mutableSetOf<String>()
-
-        // 收集 ContentRules 中的 ID
-        rule.contentRules.forEach {
-            val strategy = it.strategy
-            if (strategy is DirectViewId && strategy.useExactMatch) {
-                targetViewIds.add(strategy.viewId)
-            }
-        }
-
-        // 收集 PaymentRules 中的 ID
-        rule.paymentRules.forEach {
-            val strategy = it.strategy
-            if (strategy is DirectViewId && strategy.useExactMatch) {
-                targetViewIds.add(strategy.viewId)
-            }
-        }
-
-        // 调用系统 API 查找
-        for (viewId in targetViewIds) {
-            // 系统 API 返回的是 list
-            val foundNodes = rootNode.findAccessibilityNodeInfosByViewId(viewId)
-            if (!foundNodes.isNullOrEmpty()) {
-                for (node in foundNodes) {
-                    if (node.isVisibleToUser) {
-                        val text = node.text?.toString()?.trim()
-                        if (!text.isNullOrEmpty()) {
-                            collectedNodes.add(
-                                    NodeData(node.windowId, node.viewIdResourceName, text)
-                            )
-                        }
-                    }
-                    // 系统返回的节点需要回收
-                    node.recycle()
-                }
-            }
-        }
-        return collectedNodes
+        BillDataStoreManager.getInstance(applicationContext).saveBillAsync(data)
     }
 
     override fun onInterrupt() {
-        Timber.w("无障碍服务被中断。")
-        windowChangeDebounceJobs.values.forEach { it.cancel("Service interrupted") }
-        windowChangeDebounceJobs.clear()
-        contentChangeDebounceJobs.clear()
-        serviceScope.cancel()
+        AppLog.w { "无障碍服务被中断。" }
+        cancelAndClearJobs(windowChangeDebounceJobs, "Service interrupted")
+        cancelAndClearJobs(contentChangeDebounceJobs, "Service interrupted")
+        pageTriggerCounts.clear()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Timber.w("无障碍服务被销毁。")
-        windowChangeDebounceJobs.values.forEach { it.cancel("Service destroyed") }
-        windowChangeDebounceJobs.clear()
-        contentChangeDebounceJobs.clear()
+        AppLog.w { "无障碍服务被销毁。" }
+        cancelAndClearJobs(windowChangeDebounceJobs, "Service destroyed")
+        cancelAndClearJobs(contentChangeDebounceJobs, "Service destroyed")
+        pageTriggerCounts.clear()
         serviceScope.cancel()
     }
 }

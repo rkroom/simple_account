@@ -1,18 +1,7 @@
 -keep class net.sqlcipher.** { *; }
--assumenosideeffects class timber.log.Timber {
-    public static *** v(...);
-    public static *** d(...);
-    public static *** i(...);
-    public static *** w(...);
-    public static *** e(...);
-    public static *** wtf(...);
-    public static *** log(...);
-}
-
--assumenosideeffects class android.util.Log {
-    public static *** v(...);
-    public static *** d(...);
-    public static *** i(...);
-    public static *** w(...);
-    public static *** wtf(...);
-}
+-keepnames interface com.rkroom.simple_account.ExtractionStrategy
+-keepnames interface com.rkroom.simple_account.ConcatPart
+-keepnames class * implements com.rkroom.simple_account.ExtractionStrategy
+-keepnames class * implements com.rkroom.simple_account.ConcatPart
+-keepnames class com.rkroom.simple_account.RuleDetail
+-keepnames class com.rkroom.simple_account.ExtractionRule

@@ -14,13 +14,7 @@ import android.os.Process
 import android.provider.MediaStore
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import timber.log.Timber
 
 fun createDownloadUri(context: Context, fileName: String, mimeType: String): Uri? {
     val contentValues =
@@ -145,17 +139,25 @@ object AppUtils {
     }
 }
 
-object BillingRepository {
+open class SingletonHolder<out T : Any, in A>(creator: (A) -> T) {
+    private var creator: ((A) -> T)? = creator
+    @Volatile private var instance: T? = null
 
-    private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val json = Json { ignoreUnknownKeys = true }
+    fun getInstance(arg: A): T {
+        val i = instance
+        if (i != null) {
+            return i
+        }
 
-    fun saveBill(context: Context, billData: BillData) {
-        repositoryScope.launch {
-            try {
-                BillDataStoreManager.getInstance(context).addOrUpdateBill(billData)
-            } catch (e: Exception) {
-                Timber.e(e, "BillingRepository: 保存账单数据失败。")
+        return synchronized(this) {
+            val i2 = instance
+            if (i2 != null) {
+                i2
+            } else {
+                val created = creator!!(arg)
+                instance = created
+                creator = null 
+                created
             }
         }
     }

@@ -203,4 +203,22 @@ class NativeMethodChannel {
       debugPrint('Failed to put enableWindowContentChange: $e');
     }
   }
+
+  Future<String?> getLogLevel() async {
+    try {
+      final String? result = await _channel.invokeMethod<String>('getLogLevel');
+      return result;
+    } catch (e) {
+      debugPrint('Failed to get log level: $e');
+      return null;
+    }
+  }
+
+  Future<void> putLogLevel(String level) async {
+    try {
+      await _channel.invokeMethod('putLogLevel', {'level': level});
+    } catch (e) {
+      debugPrint('Failed to put log level: $e');
+    }
+  }
 }

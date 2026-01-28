@@ -1,257 +1,566 @@
 package com.rkroom.simple_account
 
-import timber.log.Timber
+import android.view.accessibility.AccessibilityNodeInfo
+import java.util.ArrayDeque
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** 纯数据节点快照，用于缓存 */
+data class SnapshotNode(val text: String, val viewId: String?, val index: Int)
 
 object Extractor {
+    private const val TAG = "Extractor"
 
-    /**
-     * @param pageIdentifier 封装了包名和类名的对象。
-     * @param nodes 节点数据列表。
-     * @param rules 经过预处理的规则Map，Key是包名，Value是该包对应的规则列表。
-     */
-    fun extract(
+    /** 判断某条规则是否可以走 FastPath。 给外部（Service）用来判断是否需要创建 LazyNodeProvider。 */
+    fun isFastPathRule(rule: ExtractionRule): Boolean = isEligibleForFastPath(rule)
+
+    private fun shouldForceLazyDfs(rule: ExtractionRule): Boolean {
+        fun isForce(s: ExtractionStrategy): Boolean = s is ExtractByViewId && !s.useExactMatch
+        return rule.contentRules.any { isForce(it.strategy) } ||
+                rule.paymentRules.any { isForce(it.strategy) }
+    }
+
+    suspend fun extract(
             pageIdentifier: PageIdentifier,
-            nodes: List<NodeData>,
-            matchedRule: ExtractionRule
-    ): Pair<String?, String?>? {
-        Timber.d("开始提取: pageId=$pageIdentifier, 节点数=${nodes.size}, 规则='${matchedRule.ruleName}'")
-
-        // 依次尝试内容提取规则，直到成功或全部失败
-        val extractedContent = extractTextByRules(nodes, matchedRule.contentRules)
-        Timber.d("内容提取结果: '$extractedContent'")
-        if (extractedContent == null && !matchedRule.continueOnContentFailure) {
-            Timber.d("规则 '${matchedRule.ruleName}' 设置为 content 匹配失败后立即终止，跳过 payment 提取。")
-            return null // 提前退出，避免额外开销
-        }
-        // 依次尝试支付方式提取规则
-        val extractedPayment = extractTextByRules(nodes, matchedRule.paymentRules)
-        Timber.d("支付方式提取结果: '$extractedPayment'")
-
-        return if (extractedContent != null || extractedPayment != null) {
-            Pair(extractedContent, extractedPayment).also {
-                Timber.i("提取完成: content='${it.first}', payment='${it.second}'")
-            }
-        } else {
-            Timber.d("提取完成: 未提取到任何有效信息。")
-            null
-        }
-    }
-
-    /** 遍历一组规则详情，按顺序尝试提取，成功一次即返回 */
-    private fun extractTextByRules(nodes: List<NodeData>, ruleDetails: List<RuleDetail>): String? {
-        if (ruleDetails.isEmpty()) return null
-        Timber.d("尝试 ${ruleDetails.size} 条详细规则...")
-
-        // 使用 withIndex() 来获取索引，以便判断是否为最后一条规则
-        for ((index, ruleDetail) in ruleDetails.withIndex()) {
-            Timber.d("正在尝试规则 #${index + 1}")
-
-            // 判断当前规则是否是列表中的最后一条
-            val isLastRuleInChain = (index == ruleDetails.size - 1)
-
-            // 调用修改后的 applyRuleDetail 方法，并传入 isLastRuleInChain
-            val result = applyRuleDetail(nodes, ruleDetail, isLastRuleInChain)
-
-            // 只要 result 不是 null (意味着提取成功，或是在最后一条规则失败后返回了关键字)，就立即返回
-            if (result != null) {
-                Timber.d("规则 #${index + 1} 成功，结果: '$result'")
-                return result
-            }
-        }
-
-        Timber.d("所有详细规则均未提取到内容。")
-        return null // 所有规则都尝试失败后，返回 null
-    }
-
-    /* 应用单条详细规则。*/
-    private fun applyRuleDetail(
-            nodes: List<NodeData>,
-            ruleDetail: RuleDetail,
-            isLastRule: Boolean
-    ): String? {
-        if (ruleDetail.keywords.isEmpty()) {
-            return applyAbsoluteExtraction(nodes, ruleDetail.strategy)
-        }
-
-        val strategy = ruleDetail.strategy
-        val useExactMatch = if (strategy is SimpleOffset) strategy.useExactMatch else false
-        val keywordsSet = ruleDetail.keywordsSet
-
-        Timber.d(
-                "在 ${nodes.size} 个节点中搜索 ${keywordsSet.size} 个关键字 (精确匹配: $useExactMatch)，策略: ${strategy::class.simpleName}"
-        )
-        /*
-        需缓存正则规则
-        val regex = ruleDetail.combinedKeywordsRegex
-        if (regex != null) {
-            for ((idx, node) in nodes.withIndex()) {
-                val matcher = regex.matcher(node.text)
-                if (matcher.find()) { // 使用一次正则查找替代内层循环
-                    val matchedKeyword = matcher.group(0) // 获取实际匹配到的那个关键字
-                    Timber.d("在索引 $idx 处通过正则找到关键字 '$matchedKeyword'。应用策略...")
-                    // ... 后续应用策略的逻辑
+            root: AccessibilityNodeInfo,
+            matchedRule: ExtractionRule,
+            isContentChange: Boolean = false,
+            isFinalAttempt: Boolean = true,
+            sharedProvider: LazyNodeProvider? = null,
+            disablePrefilter: Boolean = false,
+    ): Pair<String?, String?>? =
+            withContext(Dispatchers.Default) {
+                if (root.packageName?.toString() != pageIdentifier.packageName)
+                        return@withContext null
+                AppLog.d {
+                    "[$TAG][Rule=${matchedRule.ruleName}] 开始提取 | " +
+                            "isContentChange=$isContentChange, isFinalAttempt=$isFinalAttempt"
                 }
-            }
-        }
-        */
-        for ((idx, node) in nodes.withIndex()) {
-            // 查找匹配的关键字
-            val matchedKeyword =
-                    keywordsSet.firstOrNull { keyword ->
-                        if (useExactMatch) {
-                            node.text.equals(keyword, ignoreCase = true)
-                        } else {
-                            node.text.contains(keyword, ignoreCase = true)
+                val forceLazyDfs = shouldForceLazyDfs(matchedRule)
+
+                // 通道选择
+                if (isContentChange) {
+                    if (!forceLazyDfs && isEligibleForFastPath(matchedRule)) {
+                        AppLog.i {
+                            "[$TAG][Rule=${matchedRule.ruleName}] 选择 FastPath (ContentChange)"
                         }
+                        return@withContext extractFastPath(root, matchedRule)
                     }
-
-            if (matchedKeyword != null) {
-                Timber.d("在索引 $idx 处找到关键字 '$matchedKeyword'。应用策略...")
-
-                // 应用提取策略 (相对定位：以 idx 为基准)
-                val extractedText = applyStrategy(nodes, idx, strategy)
-
-                if (extractedText != null) {
-                    Timber.d("策略应用成功，提取文本: '$extractedText'")
-                    return extractedText
                 } else {
-                    // 策略应用失败后的回退处理
-                    if (isLastRule) {
-                        Timber.d("找到关键字 '$matchedKeyword'，但策略应用失败。作为兜底返回关键字本身。")
-                        return matchedKeyword
-                    } else {
-                        Timber.d("找到关键字 '$matchedKeyword'，但策略应用失败。继续尝试下一条规则...")
-                        return null
+                    if (matchedRule.preFilterByKeywords && !disablePrefilter) {
+                        AppLog.d { "[$TAG][Rule=${matchedRule.ruleName}] preFilterByKeywords 开始" }
+                        val passed = preFilterBySystemApi(root, matchedRule)
+                        if (!passed) {
+                            AppLog.i {
+                                "[$TAG][Rule=${matchedRule.ruleName}] preFilter 未命中任何关键词，终止"
+                            }
+                            return@withContext null
+                        }
+                        AppLog.d { "[$TAG][Rule=${matchedRule.ruleName}] preFilter 通过，强制 LazyDFS" }
+                    } else if (!forceLazyDfs && isEligibleForFastPath(matchedRule)) {
+                        AppLog.i {
+                            "[$TAG][Rule=${matchedRule.ruleName}] 选择 FastPath (WindowState)"
+                        }
+                        return@withContext extractFastPath(root, matchedRule)
                     }
                 }
-            }
-        }
+                //LazyDFS 通道
+                val nodeProvider = sharedProvider ?: LazyNodeProvider(root)
+                val needRecycleProvider = (sharedProvider == null)
+                AppLog.d { "[$TAG][Rule=${matchedRule.ruleName}] 进入常规通道 (Lazy DFS)" }
 
-        Timber.d("遍历完所有节点后，未找到任何关键字。")
-        return null
-    }
+                val contentKeywords =
+                        matchedRule.contentRules.flatMap { it.keywords }.filter { it.isNotBlank() }
 
-    /** 处理无关键字的提取规则 (绝对定位模式) 将基准索引设为 0，使得 offset 代表列表中的绝对位置。 */
-    private fun applyAbsoluteExtraction(
-            nodes: List<NodeData>,
-            strategy: ExtractionStrategy
-    ): String? {
-        Timber.d("应用绝对定位规则 (无关键字)，策略: ${strategy::class.simpleName}")
+                try {
+                    var content: String? = null
+                    for ((index, ruleDetail) in matchedRule.contentRules.withIndex()) {
+                        AppLog.d {
+                            "[$TAG][Rule=${matchedRule.ruleName}] Content#$index 执行策略: " +
+                                    "${ruleDetail.strategy::class.simpleName}, keywords=${ruleDetail.keywords}"
+                        }
 
-        // 如果节点列表为空，直接返回 null，防止后续处理异常
-        if (nodes.isEmpty()) {
-            Timber.d("节点列表为空，无法进行绝对定位提取。")
-            return null
-        }
+                        val isLast = index == matchedRule.contentRules.size - 1
 
-        return applyStrategy(nodes, 0, strategy)
-    }
+                        content =
+                                executeStrategy(
+                                        provider = nodeProvider,
+                                        ruleDetail = ruleDetail,
+                                        isLastRule = isLast,
+                                        tagPrefix = "Content#$index",
+                                        isFinalAttempt = isFinalAttempt
+                                )
 
-    /** 根据不同的策略执行提取操作 */
-    private fun applyStrategy(
-            nodes: List<NodeData>,
-            keywordIndex: Int,
-            strategy: ExtractionStrategy
-    ): String? {
-        Timber.d("应用策略: ${strategy::class.simpleName}")
-
-        val result =
-                when (strategy) {
-                    is SimpleOffset -> {
-                        val targetIndex = keywordIndex + strategy.offset
-                        Timber.d(
-                                "SimpleOffset: 目标索引=$targetIndex (关键字索引=$keywordIndex + 偏移=${strategy.offset})"
-                        )
-                        nodes.getOrNull(targetIndex)?.text?.trim()?.takeIf { it.isNotBlank() }
-                    }
-                    is ConditionalOffset -> {
-                        val checkIndex = keywordIndex + strategy.checkOffset
-                        val targetIndex = keywordIndex + strategy.targetOffset
-                        Timber.d(
-                                "ConditionalOffset: 检查索引=$checkIndex, 目标索引=$targetIndex, 期望文本包含='${strategy.expectedTexts.joinToString()}'"
-                        )
-
-                        val checkNodeText = nodes.getOrNull(checkIndex)?.text?.trim() ?: ""
-
-                        // 直接检查列表中是否有任意一个元素被包含
-                        if (strategy.expectedTexts.any { expected ->
-                                    checkNodeText.contains(expected, ignoreCase = true)
-                                }
-                        ) {
-                            Timber.d("ConditionalOffset: 条件满足。")
-                            nodes.getOrNull(targetIndex)?.text?.trim()?.takeIf { it.isNotBlank() }
+                        if (content != null) {
+                            AppLog.i {
+                                "[$TAG][Rule=${matchedRule.ruleName}] Content#$index 成功 -> $content"
+                            }
+                            break
                         } else {
-                            Timber.d("ConditionalOffset: 条件不满足 (checkText='$checkNodeText').")
-                            null
+                            AppLog.v { "[$TAG][Rule=${matchedRule.ruleName}] Content#$index 未命中" }
                         }
                     }
-                    is Concatenate -> {
-                        Timber.d("Concatenate: 拼接 ${strategy.parts.size} 个部分 。")
-                        val concatenatedResult = buildString {
-                            for (part in strategy.parts) {
-                                when (part) {
-                                    is Literal -> {
-                                        Timber.d("拼接字面量: '${part.text}'")
-                                        append(part.text)
-                                    }
-                                    is NodeText -> {
-                                        val targetIndex = keywordIndex + part.offset
-                                        val text =
-                                                nodes.getOrNull(targetIndex)?.text?.trim()?.takeIf {
-                                                    it.isNotBlank()
-                                                }
 
-                                        Timber.d("拼接节点文本: 索引=$targetIndex, 文本='$text'")
-                                        // 如果 text 有效 (非null且非空白)，就拼接
-                                        text?.let { append(it) }
+                    if (content == null) {
+                        // DirectViewId 失败通常意味着页面结构完全不符，直接判为不命中
+                        if (matchedRule.contentRules.any { it.strategy is DirectViewId }) {
+                            AppLog.d {
+                                "[$TAG][Rule=${matchedRule.ruleName}] Content DirectViewId 未命中，结束。"
+                            }
+                            return@withContext null
+                        }
+
+                        // 判断页面是否“出现过任何 Content 关键字”
+                        var hasContentKeywordsInPage = false
+                        if (contentKeywords.isNotEmpty()) {
+                            hasContentKeywordsInPage =
+                                    nodeProvider.findFirst { snapshot ->
+                                        contentKeywords.any { kw ->
+                                            snapshot.text.contains(kw, ignoreCase = true)
+                                        }
+                                    } != null
+                        }
+
+                        // 情况 A：完全没出现 Content 关键字
+                        if (!hasContentKeywordsInPage) {
+                            if (!matchedRule.continueOnContentFailure) {
+                                AppLog.d { "[$TAG] Content 未命中关键字且不允许继续，结束。" }
+                                return@withContext null
+                            } else {
+                                // 允许继续：仅 Payment
+                                var payment: String? = null
+                                for ((index, ruleDetail) in matchedRule.paymentRules.withIndex()) {
+                                    val isLast = index == matchedRule.paymentRules.size - 1
+                                    payment =
+                                            executeStrategy(
+                                                    provider = nodeProvider,
+                                                    ruleDetail = ruleDetail,
+                                                    isLastRule = isLast,
+                                                    tagPrefix = "Payment#$index",
+                                                    isFinalAttempt = isFinalAttempt
+                                            )
+                                    if (payment != null) {
+                                        AppLog.d { "[$TAG] Payment提取成功(仅Payment): $payment" }
+                                        break
                                     }
+                                }
+                                return@withContext if (payment != null) Pair(null, payment)
+                                else null
+                            }
+                        }
+
+                        // 情况 B：出现了关键字，但提取失败
+                        if (!matchedRule.continueOnContentFailure) {
+                            AppLog.d { "[$TAG] Content提取失败但命中关键字，生成空账单。" }
+                            return@withContext Pair("", null)
+                        } else {
+                            AppLog.d { "[$TAG] Content提取失败但命中关键字，继续尝试 Payment。" }
+                            var payment: String? = null
+                            for ((index, ruleDetail) in matchedRule.paymentRules.withIndex()) {
+                                val isLast = index == matchedRule.paymentRules.size - 1
+                                payment =
+                                        executeStrategy(
+                                                provider = nodeProvider,
+                                                ruleDetail = ruleDetail,
+                                                isLastRule = isLast,
+                                                tagPrefix = "Payment#$index",
+                                                isFinalAttempt = isFinalAttempt
+                                        )
+                                if (payment != null) {
+                                    AppLog.d { "[$TAG] Payment提取成功: $payment" }
+                                    break
+                                }
+                            }
+                            return@withContext Pair("", payment)
+                        }
+                    }
+
+                    var payment: String? = null
+                    if (matchedRule.paymentRules.isNotEmpty()) {
+                        for ((index, ruleDetail) in matchedRule.paymentRules.withIndex()) {
+                            val isLast = index == matchedRule.paymentRules.size - 1
+                            payment =
+                                    executeStrategy(
+                                            provider = nodeProvider,
+                                            ruleDetail = ruleDetail,
+                                            isLastRule = isLast,
+                                            tagPrefix = "Payment#$index",
+                                            isFinalAttempt = isFinalAttempt
+                                    )
+                            if (payment != null) {
+                                AppLog.d { "[$TAG] Payment提取成功: $payment" }
+                                break
+                            }
+                        }
+                    }
+
+                    return@withContext if (content != null || payment != null)
+                            Pair(content, payment)
+                    else null
+                } catch (e: Exception) {
+                    AppLog.e(e) { "[$TAG] 提取异常" }
+                    null
+                } finally {
+                    if (needRecycleProvider) nodeProvider.recycle()
+                }
+            }
+
+    /** WindowStateChanged 下的 preFilter：系统API预检任意关键词命中即通过 */
+    private fun preFilterBySystemApi(root: AccessibilityNodeInfo, rule: ExtractionRule): Boolean {
+        val allKeywords =
+                (rule.contentRules + rule.paymentRules)
+                        .flatMap { it.keywords }
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+
+        // 没配置关键词：无法预检，视为放行
+        if (allKeywords.isEmpty()) return true
+
+        for (kw in allKeywords) {
+            val nodes =
+                    try {
+                        root.findAccessibilityNodeInfosByText(kw)
+                    } catch (_: Exception) {
+                        null
+                    }
+            if (!nodes.isNullOrEmpty()) {
+                nodes.recycleAll()
+                AppLog.v { "[$TAG] preFilterByKeywords 命中关键词: $kw" }
+                return true
+            }
+            nodes.recycleAll()
+        }
+        return false
+    }
+
+    private fun isEligibleForFastPath(rule: ExtractionRule): Boolean {
+        fun isStrategyEligible(strategy: ExtractionStrategy): Boolean =
+                when (strategy) {
+                    is DirectViewId -> true
+                    is ExtractByViewId -> strategy.useExactMatch
+                    is SimpleOffset -> strategy.offset == 0 && !strategy.useExactMatch
+                    else -> false
+                }
+
+        return rule.contentRules.all { isStrategyEligible(it.strategy) } &&
+                rule.paymentRules.all { isStrategyEligible(it.strategy) }
+    }
+
+    private fun extractFastPath(
+            root: AccessibilityNodeInfo,
+            rule: ExtractionRule
+    ): Pair<String?, String?>? {
+        AppLog.d { "[$TAG][Rule=${rule.ruleName}] FastPath 执行" }
+        fun getBySystemApi(rules: List<RuleDetail>, type: String): String? {
+            for (detail in rules) {
+                val strategy = detail.strategy
+                AppLog.v {
+                    "[$TAG][FastPath-$type] 尝试策略 ${strategy::class.simpleName} " +
+                            "keywords=${detail.keywords}"
+                }
+                try {
+                    val nodes =
+                            when (strategy) {
+                                is DirectViewId ->
+                                        root.findAccessibilityNodeInfosByViewId(strategy.viewId)
+                                is ExtractByViewId -> // useExactMatch=true
+                                root.findAccessibilityNodeInfosByViewId(strategy.viewId)
+                                is SimpleOffset -> { // offset=0 && exact=false
+                                    var found: List<AccessibilityNodeInfo>? = null
+                                    for (kw in detail.keywords) {
+                                        val res = root.findAccessibilityNodeInfosByText(kw)
+                                        if (!res.isNullOrEmpty()) {
+                                            found = res
+                                            break
+                                        }
+                                    }
+                                    found
+                                }
+                                else -> null
+                            }
+
+                    if (!nodes.isNullOrEmpty()) {
+                        var resultText: String? = null
+                        for (node in nodes) {
+                            if (isVisible(node)) {
+                                val raw = node.text?.toString()?.trim()
+                                val desc = node.contentDescription?.toString()?.trim()
+                                val text = if (!raw.isNullOrEmpty()) raw else desc
+                                if (!text.isNullOrEmpty()) {
+                                    resultText = text
+                                    break
                                 }
                             }
                         }
-                        // 如果最终结果非空，则返回；否则返回 null
-                        concatenatedResult.takeIf { it.isNotEmpty() }
-                    }
-                    is ExtractByViewId -> {
-                        Timber.d("ExtractByViewId: 正在查找 ID '${strategy.viewId}'")
-
-                        // 遍历所有节点，查找 ViewId 匹配的项
-                        val targetNode =
-                                nodes.firstOrNull { node ->
-                                    val nodeId = node.viewId ?: return@firstOrNull false
-
-                                    if (strategy.useExactMatch) {
-                                        // 精确匹配：必须完全相等(com.pkg:id/name)
-                                        nodeId == strategy.viewId
-                                    } else {
-                                        // 模糊匹配：结尾匹配
-                                        nodeId.endsWith(strategy.viewId)
-                                    }
-                                }
-
-                        if (targetNode != null) {
-                            Timber.d("ExtractByViewId: 找到匹配节点，ID='${targetNode.viewId}'")
+                        nodes.recycleAll()
+                        if (resultText != null) {
+                            AppLog.v { "[$TAG] FastPath($type) 命中: $resultText" }
+                            return resultText
                         }
-
-                        targetNode?.text?.trim()?.takeIf { it.isNotBlank() }
                     }
-                    is DirectViewId -> {
-                        Timber.d("DirectViewId: 正在全局查找 ID '${strategy.viewId}'")
+                } catch (_: Exception) {
+                    AppLog.w { "[$TAG] FastPath 系统API查找失败" }
+                }
+            }
+            return null
+        }
 
-                        val targetNode =
-                                nodes.firstOrNull { node ->
-                                    val nodeId = node.viewId ?: return@firstOrNull false
-                                    if (strategy.useExactMatch) {
-                                        nodeId == strategy.viewId
-                                    } else {
-                                        nodeId.endsWith(strategy.viewId)
-                                    }
-                                }
+        val content = getBySystemApi(rule.contentRules, "Content")
+        if (content == null && !rule.continueOnContentFailure) return null
+        val payment = getBySystemApi(rule.paymentRules, "Payment")
+        return if (content != null || payment != null) Pair(content, payment) else null
+    }
 
-                        targetNode?.text?.trim()?.takeIf { it.isNotBlank() }
-                    }
+    private fun executeStrategy(
+            provider: LazyNodeProvider,
+            ruleDetail: RuleDetail,
+            isLastRule: Boolean,
+            tagPrefix: String,
+            isFinalAttempt: Boolean
+    ): String? {
+        val strategy = ruleDetail.strategy
+
+        AppLog.v {
+            "[$TAG][$tagPrefix] 执行策略 ${strategy::class.simpleName} | " +
+                    "keywords=${ruleDetail.keywords}, isLast=$isLastRule, final=$isFinalAttempt"
+        }
+        val hasKeywords = ruleDetail.keywords.isNotEmpty()
+
+        fun isMatch(node: SnapshotNode): Boolean =
+                ruleDetail.keywords.any { k ->
+                    if (k.isBlank()) return@any false
+                    if (strategy is SimpleOffset && strategy.useExactMatch)
+                            node.text.equals(k, ignoreCase = true)
+                    else node.text.contains(k, ignoreCase = true)
                 }
 
-        Timber.d("策略应用结果: '$result'")
-        return result
+        return when (strategy) {
+            is DirectViewId -> {
+                AppLog.v { "[$TAG][$tagPrefix] DirectViewId 查找: ${strategy.viewId}" }
+                val res = provider.findById(strategy.viewId, exact = true)
+                if (res != null) {
+                    AppLog.i { "[$TAG][$tagPrefix] DirectViewId 命中 -> $res" }
+                }
+                res
+            }
+            is ExtractByViewId -> {
+                AppLog.v {
+                    "[$TAG][$tagPrefix] ExtractByViewId 查找: ${strategy.viewId}, exact=${strategy.useExactMatch}"
+                }
+
+                val textById = provider.findById(strategy.viewId, exact = strategy.useExactMatch)
+                if (!textById.isNullOrBlank()) {
+                    AppLog.i { "[$TAG][$tagPrefix] ExtractByViewId 命中 -> $textById" }
+                    return textById
+                }
+
+                if (!strategy.useExactMatch && isLastRule && hasKeywords && isFinalAttempt) {
+                    AppLog.w { "[$TAG][$tagPrefix] ID 未命中，触发关键词兜底" }
+                }
+                null
+            }
+            is SimpleOffset, is ConditionalOffset, is Concatenate -> {
+                if (!hasKeywords) {
+                    AppLog.w { "[$TAG] $tagPrefix 策略${strategy::class.simpleName}必须配置关键字" }
+                    return null
+                }
+                val anchorNode = provider.findFirst { isMatch(it) }
+                if (anchorNode == null) {
+                    AppLog.v { "[$TAG][$tagPrefix] 未找到锚点节点" }
+                    return null
+                }
+
+                AppLog.v {
+                    "[$TAG][$tagPrefix] 锚点命中: index=${anchorNode.index}, text=${anchorNode.text}"
+                }
+                val result =
+                        when (strategy) {
+                            is SimpleOffset -> {
+                                val targetIndex = anchorNode.index + strategy.offset
+                                AppLog.v {
+                                    "[$TAG][$tagPrefix] SimpleOffset offset=${strategy.offset}, targetIndex=$targetIndex"
+                                }
+                                provider.getByIndex(targetIndex)?.text
+                            }
+                            is ConditionalOffset -> {
+                                val checkIndex = anchorNode.index + strategy.checkOffset
+                                val checkNode = provider.getByIndex(checkIndex)
+                                AppLog.v {
+                                    "[$TAG][$tagPrefix] ConditionalOffset checkIndex=$checkIndex, text=${checkNode?.text}"
+                                }
+
+                                if (checkNode != null &&
+                                                strategy.expectedTexts.any {
+                                                    checkNode.text.contains(it)
+                                                }
+                                ) {
+                                    val targetIndex = anchorNode.index + strategy.targetOffset
+                                    AppLog.v { "[$TAG][$tagPrefix] 条件满足，targetIndex=$targetIndex" }
+                                    provider.getByIndex(targetIndex)?.text
+                                } else null
+                            }
+                            is Concatenate -> {
+                                AppLog.v {
+                                    "[$TAG][$tagPrefix] Concatenate parts=${strategy.parts}"
+                                }
+                                buildConcatenateString(provider, strategy, anchorNode.index)
+                            }
+                            else -> null
+                        }
+
+                if (!result.isNullOrBlank()) return result
+
+                if (isLastRule && isFinalAttempt) {
+                    val fallback = anchorNode.text
+                    AppLog.d { "[$TAG] $tagPrefix 提取失败，触发兜底返回节点文本/描述: $fallback" }
+                    return fallback
+                }
+                null
+            }
+        }
+    }
+
+    private fun buildConcatenateString(
+            provider: LazyNodeProvider,
+            strategy: Concatenate,
+            baseIndex: Int
+    ): String? {
+        val sb = StringBuilder()
+        var hasNode = false
+        for (part in strategy.parts) {
+            when (part) {
+                is Literal -> sb.append(part.text)
+                is NodeText -> {
+                    val text = provider.getByIndex(baseIndex + part.offset)?.text
+                    if (text != null) {
+                        sb.append(text)
+                        hasNode = true
+                    }
+                }
+            }
+        }
+        return if (hasNode) sb.toString() else null
+    }
+
+    private fun isVisible(node: AccessibilityNodeInfo): Boolean =
+            try {
+                node.isVisibleToUser
+            } catch (_: Exception) {
+                false
+            }
+
+    private fun List<AccessibilityNodeInfo>?.recycleAll() {
+        this?.forEach {
+            try {
+                it.recycle()
+            } catch (_: Exception) {}
+        }
+    }
+
+    class LazyNodeProvider(root: AccessibilityNodeInfo) {
+        private val cachedNodes = ArrayList<SnapshotNode>()
+        private val stack = ArrayDeque<AccessibilityNodeInfo>()
+        private val rootRef = root
+        private var visitedCount = 0
+
+        companion object {
+            private const val MAX_TRAVERSAL_LIMIT = 300
+        }
+
+        init {
+            try {
+                stack.push(root)
+            } catch (_: Exception) {}
+        }
+
+        fun getByIndex(index: Int): SnapshotNode? {
+            if (index < 0) return null
+            while (cachedNodes.size <= index &&
+                    stack.isNotEmpty() &&
+                    visitedCount < MAX_TRAVERSAL_LIMIT) advance()
+            return if (index < cachedNodes.size) cachedNodes[index] else null
+        }
+
+        fun findFirst(predicate: (SnapshotNode) -> Boolean): SnapshotNode? {
+            for (n in cachedNodes) if (predicate(n)) return n
+            while (stack.isNotEmpty() && visitedCount < MAX_TRAVERSAL_LIMIT) {
+                val nn = advance()
+                if (nn != null && predicate(nn)) return nn
+            }
+            return null
+        }
+
+        fun findById(viewId: String, exact: Boolean): String? {
+            if (viewId.isBlank()) return null
+            return findFirst {
+                        val id = it.viewId ?: return@findFirst false
+                        if (exact) id == viewId else id.endsWith(viewId)
+                    }
+                    ?.text
+        }
+
+        private fun advance(): SnapshotNode? {
+            if (stack.isEmpty()) return null
+            if (visitedCount >= MAX_TRAVERSAL_LIMIT) {
+                if (visitedCount == MAX_TRAVERSAL_LIMIT) {
+                    AppLog.w { "[$TAG] 遍历触发熔断机制: 已扫描 $MAX_TRAVERSAL_LIMIT 个节点" }
+                    visitedCount++
+                }
+                return null
+            }
+            visitedCount++
+            val node = stack.pop()
+            var snapshot: SnapshotNode? = null
+            try {
+                if (isVisible(node)) {
+                    val raw = node.text?.toString()?.trim()
+                    val desc = node.contentDescription?.toString()?.trim()
+                    val effective = if (!raw.isNullOrEmpty()) raw else desc
+                    if (!effective.isNullOrEmpty()) {
+                        snapshot =
+                                SnapshotNode(effective, node.viewIdResourceName, cachedNodes.size)
+                        cachedNodes.add(snapshot)
+                    }
+                    val count = node.childCount
+                    for (i in count - 1 downTo 0) {
+                        node.getChild(i)?.let { stack.push(it) }
+                    }
+                }
+            } catch (_: Exception) {} finally {
+                if (node != rootRef) {
+                    try {
+                        node.recycle()
+                    } catch (_: Exception) {}
+                }
+            }
+            return snapshot
+        }
+
+        fun recycle() {
+            while (stack.isNotEmpty()) {
+                val n = stack.pop()
+                if (n != rootRef) {
+                    try {
+                        n.recycle()
+                    } catch (_: Exception) {}
+                }
+            }
+            cachedNodes.clear()
+        }
+    }
+}
+
+@OptIn(ExperimentalContracts::class)
+inline fun <R> AccessibilityNodeInfo.use(block: (AccessibilityNodeInfo) -> R): R {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
+    try {
+        return block(this)
+    } finally {
+        try {
+            this.recycle()
+        } catch (_: Exception) {}
     }
 }
