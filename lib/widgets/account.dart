@@ -568,7 +568,7 @@ class AccountStatementPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text("$accountName-账单")),
-      body: StatementWidget(accountParam: accountID),
+      body: StatementWidget(accountParam: accountID, showBalance: true),
     );
   }
 }

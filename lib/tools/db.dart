@@ -549,6 +549,568 @@ JOIN TopValues t on a.id = t.account_info_id""",
     );
   }
 
+  String _normalizeSqliteDateTime(time) {
+    if (time is DateTime) {
+      return DateFormat('yyyy-MM-dd HH:mm:ss').format(time);
+    }
+    if (time is String) {
+      return time.length >= 19 ? time.substring(0, 19) : time;
+    }
+    throw ArgumentError('时间参数必须是 DateTime 或 String');
+  }
+
+  Future<List<Map<String, dynamic>>> gettabledataWithBalance(
+    int pageSize,
+    int pageNum, {
+    DateTime? startTime,
+    DateTime? endTime,
+    String? accountID,
+    String? categoryID,
+    String? firstLevelCategoryID,
+    String? flowParam,
+  }) async {
+    if (categoryID != null &&
+        categoryID.isNotEmpty &&
+        categoryID != '%' &&
+        firstLevelCategoryID != null &&
+        firstLevelCategoryID.isNotEmpty &&
+        firstLevelCategoryID != '%') {
+      throw ArgumentError(
+        '不能同时使用 (categoryID) 和 (firstLevelCategoryID) 进行筛选。请只提供一个参数。',
+      );
+    }
+
+    if (accountID == null || accountID.isEmpty || accountID == '%') {
+      throw ArgumentError(
+        'gettabledataWithBalance 仅支持单账户查询，accountID 必须传具体账户ID。',
+      );
+    }
+
+    var db = await database;
+
+    final String normalizedStart = _normalizeSqliteDateTime(
+      startTime ?? DateTime(1970, 1, 1),
+    );
+    final String normalizedEnd = _normalizeSqliteDateTime(
+      endTime ?? DateTime(9999, 12, 31, 23, 59, 59),
+    );
+
+    final int offset = (pageNum - 1) * pageSize;
+
+    final List<String> pageMainWhere = [
+      "b.account_info_id = ?",
+      "b.when_time >= ?",
+      "b.when_time <= ?",
+    ];
+    final List<dynamic> pageMainParams = [
+      accountID,
+      normalizedStart,
+      normalizedEnd,
+    ];
+
+    final List<String> pageAimWhere = [
+      "b.aim_account_id = ?",
+      "b.account_info_id <> ?",
+      "b.flow = 'transfer'",
+      "b.when_time >= ?",
+      "b.when_time <= ?",
+    ];
+    final List<dynamic> pageAimParams = [
+      accountID,
+      accountID,
+      normalizedStart,
+      normalizedEnd,
+    ];
+
+    if (categoryID != null && categoryID.isNotEmpty && categoryID != '%') {
+      pageMainWhere.add("b.types_id = ?");
+      pageMainParams.add(categoryID);
+
+      pageAimWhere.add("b.types_id = ?");
+      pageAimParams.add(categoryID);
+    }
+
+    if (firstLevelCategoryID != null &&
+        firstLevelCategoryID.isNotEmpty &&
+        firstLevelCategoryID != '%') {
+      pageMainWhere.add("s.parent_category_id = ?");
+      pageMainParams.add(firstLevelCategoryID);
+
+      pageAimWhere.add("s.parent_category_id = ?");
+      pageAimParams.add(firstLevelCategoryID);
+    }
+
+    bool includeAimBranch = true;
+
+    if (flowParam != null && flowParam.isNotEmpty && flowParam != '%') {
+      pageMainWhere.add("b.flow = ?");
+      pageMainParams.add(flowParam);
+
+      if (flowParam != 'transfer') {
+        includeAimBranch = false;
+      }
+    }
+
+    String pageSourceSql = """
+    SELECT
+      b.id,
+      b.types_id,
+      b.flow,
+      b.detailed,
+      b.account_info_id,
+      b.aim_account_id,
+      b.comment,
+      b.when_time
+    FROM books_account_book b
+    LEFT JOIN books_account_category_specific s
+      ON b.types_id = s.id
+    WHERE ${pageMainWhere.join(" AND ")}
+  """;
+
+    final List<dynamic> pageParams = [...pageMainParams];
+
+    if (includeAimBranch) {
+      pageSourceSql += """
+      UNION ALL
+      SELECT
+        b.id,
+        b.types_id,
+        b.flow,
+        b.detailed,
+        b.account_info_id,
+        b.aim_account_id,
+        b.comment,
+        b.when_time
+      FROM books_account_book b
+      LEFT JOIN books_account_category_specific s
+        ON b.types_id = s.id
+      WHERE ${pageAimWhere.join(" AND ")}
+    """;
+      pageParams.addAll(pageAimParams);
+    }
+
+    final String finalSql = """
+    WITH current_account AS (
+      SELECT
+        bi.id AS account_id,
+        bi.type,
+        bi.amount
+      FROM books_account_info bi
+      WHERE bi.id = ?
+    ),
+
+    page_source AS (
+      $pageSourceSql
+    ),
+
+    page_rows AS (
+      SELECT
+        ps.id,
+        ps.types_id,
+        ps.flow,
+        ps.detailed,
+        ps.account_info_id,
+        ps.aim_account_id,
+        ps.comment,
+        ps.when_time
+      FROM page_source ps
+      ORDER BY ps.when_time DESC, ps.id DESC
+      LIMIT ?
+      OFFSET ?
+    ),
+
+    ledger_raw AS (
+      SELECT
+        b.id AS book_id,
+        b.when_time,
+        CASE
+          WHEN ca.type = 'asset' AND b.flow = 'income' THEN b.detailed
+          WHEN ca.type = 'asset' AND b.flow = 'consume' THEN -b.detailed
+          WHEN ca.type = 'asset' AND b.flow = 'transfer' THEN -b.detailed
+          WHEN ca.type = 'debt'  AND b.flow = 'income' THEN -b.detailed
+          WHEN ca.type = 'debt'  AND b.flow = 'consume' THEN b.detailed
+          WHEN ca.type = 'debt'  AND b.flow = 'transfer' THEN b.detailed
+          ELSE 0
+        END AS delta
+      FROM books_account_book b
+      INNER JOIN current_account ca
+        ON b.account_info_id = ca.account_id
+      WHERE b.when_time <= ?
+
+      UNION ALL
+
+      SELECT
+        b.id AS book_id,
+        b.when_time,
+        CASE
+          WHEN ca.type = 'asset' THEN b.detailed
+          WHEN ca.type = 'debt'  THEN -b.detailed
+          ELSE 0
+        END AS delta
+      FROM books_account_book b
+      INNER JOIN current_account ca
+        ON b.aim_account_id = ca.account_id
+      WHERE b.flow = 'transfer'
+        AND b.when_time <= ?
+    ),
+
+    ledger AS (
+      SELECT
+        lr.book_id,
+        lr.when_time,
+        SUM(lr.delta) AS delta
+      FROM ledger_raw lr
+      GROUP BY lr.book_id, lr.when_time
+    ),
+
+    base_balance AS (
+      SELECT
+        ROUND(
+          CASE
+            WHEN ca.type = 'asset' THEN ca.amount
+            WHEN ca.type = 'debt'  THEN -ca.amount
+            ELSE 0
+          END,
+          2
+        ) AS base_balance
+      FROM current_account ca
+    ),
+
+    running_balance AS (
+      SELECT
+        l.book_id,
+        ROUND(
+          bb.base_balance +
+          SUM(l.delta) OVER (
+            ORDER BY l.when_time, l.book_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ),
+          2
+        ) AS balance
+      FROM ledger l
+      CROSS JOIN base_balance bb
+    )
+
+    SELECT
+      i.name AS account,
+      pr.account_info_id AS account_id,
+      CASE
+        WHEN pr.flow = 'consume' THEN '支出'
+        WHEN pr.flow = 'income' THEN '收入'
+        WHEN pr.flow = 'transfer' THEN '转账'
+      END AS flow,
+      i2.name AS aim_account,
+      pr.aim_account_id,
+      s.specific_category AS category,
+      pr.comment,
+      strftime('%Y-%m-%d %H:%M', pr.when_time) AS date,
+      pr.detailed,
+      pr.flow AS flowSign,
+      pr.id,
+      rb.balance AS balance
+    FROM page_rows pr
+    INNER JOIN books_account_info i
+      ON pr.account_info_id = i.id
+    LEFT JOIN books_account_info i2
+      ON pr.aim_account_id = i2.id
+    LEFT JOIN books_account_category_specific s
+      ON pr.types_id = s.id
+    LEFT JOIN running_balance rb
+      ON rb.book_id = pr.id
+    ORDER BY pr.when_time DESC, pr.id DESC
+  """;
+
+    final params = [
+      accountID,
+      ...pageParams,
+      pageSize,
+      offset,
+      normalizedEnd,
+      normalizedEnd,
+    ];
+
+    return db.rawQuery(finalSql, params);
+  }
+
+  /*
+  Future gettabledataWithDoubleBalance(
+    accountParam,
+    categoryParam,
+    selectedStartTime,
+    selectedEndTime,
+    flowParam,
+    pageSize,
+    page,
+  ) async {
+    var db = await database;
+
+    final startTime = _normalizeSqliteDateTime(selectedStartTime);
+    final endTime = _normalizeSqliteDateTime(selectedEndTime);
+
+    String pageSourceSql = "";
+    final List<dynamic> pageParams = [];
+
+    if (accountParam == "%") {
+      final List<String> whereClauses = [
+        "b.when_time >= ?",
+        "b.when_time <= ?",
+      ];
+      pageParams.add(startTime);
+      pageParams.add(endTime);
+
+      if (categoryParam != "%") {
+        whereClauses.add("b.types_id = ?");
+        pageParams.add(categoryParam);
+      }
+
+      if (flowParam != "%") {
+        whereClauses.add("b.flow = ?");
+        pageParams.add(flowParam);
+      }
+
+      pageSourceSql = """
+      SELECT
+        b.id,
+        b.types_id,
+        b.flow,
+        b.detailed,
+        b.account_info_id,
+        b.aim_account_id,
+        b.comment,
+        b.when_time
+      FROM books_account_book b
+      WHERE ${whereClauses.join(" AND ")}
+    """;
+    } else {
+      final List<String> mainWhere = [
+        "b.account_info_id = ?",
+        "b.when_time >= ?",
+        "b.when_time <= ?",
+      ];
+      final List<dynamic> mainParams = [accountParam, startTime, endTime];
+
+      final List<String> aimWhere = [
+        "b.aim_account_id = ?",
+        "b.account_info_id <> ?",
+        "b.flow = 'transfer'",
+        "b.when_time >= ?",
+        "b.when_time <= ?",
+      ];
+      final List<dynamic> aimParams = [
+        accountParam,
+        accountParam,
+        startTime,
+        endTime,
+      ];
+
+      if (categoryParam != "%") {
+        mainWhere.add("b.types_id = ?");
+        mainParams.add(categoryParam);
+
+        aimWhere.add("b.types_id = ?");
+        aimParams.add(categoryParam);
+      }
+
+      bool includeAimBranch = true;
+
+      if (flowParam != "%") {
+        mainWhere.add("b.flow = ?");
+        mainParams.add(flowParam);
+
+        if (flowParam != "transfer") {
+          includeAimBranch = false;
+        }
+      }
+
+      pageSourceSql = """
+      SELECT
+        b.id,
+        b.types_id,
+        b.flow,
+        b.detailed,
+        b.account_info_id,
+        b.aim_account_id,
+        b.comment,
+        b.when_time
+      FROM books_account_book b
+      WHERE ${mainWhere.join(" AND ")}
+    """;
+      pageParams.addAll(mainParams);
+
+      if (includeAimBranch) {
+        pageSourceSql += """
+        UNION ALL
+        SELECT
+          b.id,
+          b.types_id,
+          b.flow,
+          b.detailed,
+          b.account_info_id,
+          b.aim_account_id,
+          b.comment,
+          b.when_time
+        FROM books_account_book b
+        WHERE ${aimWhere.join(" AND ")}
+      """;
+        pageParams.addAll(aimParams);
+      }
+    }
+
+    final String finalSql = """
+    WITH page_source AS (
+      $pageSourceSql
+    ),
+
+    page_rows AS (
+      SELECT
+        ps.id,
+        ps.types_id,
+        ps.flow,
+        ps.detailed,
+        ps.account_info_id,
+        ps.aim_account_id,
+        ps.comment,
+        ps.when_time
+      FROM page_source ps
+      ORDER BY ps.when_time DESC, ps.id DESC
+      LIMIT ?
+      OFFSET ?
+    ),
+
+    accounts_needed AS (
+      SELECT DISTINCT account_info_id AS account_id
+      FROM page_rows
+      WHERE account_info_id IS NOT NULL
+
+      UNION
+
+      SELECT DISTINCT aim_account_id AS account_id
+      FROM page_rows
+      WHERE aim_account_id IS NOT NULL
+    ),
+
+    account_base AS (
+      SELECT
+        bi.id AS account_id,
+        bi.type,
+        ROUND(
+          CASE
+            WHEN bi.type = 'asset' THEN bi.amount
+            WHEN bi.type = 'debt'  THEN -bi.amount
+            ELSE 0
+          END,
+          2
+        ) AS base_balance
+      FROM books_account_info bi
+      INNER JOIN accounts_needed an
+        ON an.account_id = bi.id
+    ),
+
+    ledger_raw AS (
+      SELECT
+        b.id AS book_id,
+        b.when_time,
+        ab.account_id,
+        CASE
+          WHEN ab.type = 'asset' AND b.flow = 'income' THEN b.detailed
+          WHEN ab.type = 'asset' AND b.flow = 'consume' THEN -b.detailed
+          WHEN ab.type = 'asset' AND b.flow = 'transfer' THEN -b.detailed
+          WHEN ab.type = 'debt'  AND b.flow = 'income' THEN -b.detailed
+          WHEN ab.type = 'debt'  AND b.flow = 'consume' THEN b.detailed
+          WHEN ab.type = 'debt'  AND b.flow = 'transfer' THEN b.detailed
+          ELSE 0
+        END AS delta
+      FROM books_account_book b
+      INNER JOIN account_base ab
+        ON ab.account_id = b.account_info_id
+      WHERE b.when_time <= ?
+
+      UNION ALL
+
+      SELECT
+        b.id AS book_id,
+        b.when_time,
+        ab.account_id,
+        CASE
+          WHEN ab.type = 'asset' THEN b.detailed
+          WHEN ab.type = 'debt'  THEN -b.detailed
+          ELSE 0
+        END AS delta
+      FROM books_account_book b
+      INNER JOIN account_base ab
+        ON ab.account_id = b.aim_account_id
+      WHERE b.flow = 'transfer'
+        AND b.aim_account_id IS NOT NULL
+        AND b.when_time <= ?
+    ),
+
+    ledger AS (
+      SELECT
+        lr.book_id,
+        lr.when_time,
+        lr.account_id,
+        SUM(lr.delta) AS delta
+      FROM ledger_raw lr
+      GROUP BY lr.book_id, lr.when_time, lr.account_id
+    ),
+
+    running_balance AS (
+      SELECT
+        l.book_id,
+        l.account_id,
+        ROUND(
+          ab.base_balance +
+          SUM(l.delta) OVER (
+            PARTITION BY l.account_id
+            ORDER BY l.when_time, l.book_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ),
+          2
+        ) AS balance
+      FROM ledger l
+      INNER JOIN account_base ab
+        ON ab.account_id = l.account_id
+    )
+
+    SELECT
+      i.name AS account,
+      pr.account_info_id AS account_id,
+      CASE
+        WHEN pr.flow = 'consume' THEN '支出'
+        WHEN pr.flow = 'income' THEN '收入'
+        WHEN pr.flow = 'transfer' THEN '转账'
+      END AS flow,
+      i2.name AS aim_account,
+      pr.aim_account_id,
+      s.specific_category AS category,
+      pr.comment,
+      strftime('%Y-%m-%d %H:%M', pr.when_time) AS date,
+      pr.detailed,
+      pr.flow AS flowSign,
+      pr.id,
+      rb1.balance AS account_balance,
+      rb2.balance AS aim_account_balance
+    FROM page_rows pr
+    INNER JOIN books_account_info i
+      ON pr.account_info_id = i.id
+    LEFT JOIN books_account_info i2
+      ON pr.aim_account_id = i2.id
+    LEFT JOIN books_account_category_specific s
+      ON pr.types_id = s.id
+    LEFT JOIN running_balance rb1
+      ON rb1.book_id = pr.id
+      AND rb1.account_id = pr.account_info_id
+    LEFT JOIN running_balance rb2
+      ON rb2.book_id = pr.id
+      AND rb2.account_id = pr.aim_account_id
+    ORDER BY pr.when_time DESC, pr.id DESC
+  """;
+
+    final params = [...pageParams, pageSize, page, endTime, endTime];
+
+    return db.rawQuery(finalSql, params);
+  }
+*/
   //测试数据库文件
   Future<bool> checkDBfile(String path, String password) async {
     try {
@@ -616,10 +1178,13 @@ JOIN TopValues t on a.id = t.account_info_id""",
           CONSTRAINT "fk_books_account_book_books_account_info_2" FOREIGN KEY("aim_account_id") REFERENCES "books_account_info"("id"))""",
       );
       await txn.execute(
-        """CREATE INDEX "books_account_book_account_info_id_030de390" ON "books_account_book" ("account_info_id" ASC)""",
+        """CREATE INDEX IF NOT EXISTS idx_book_account_time_id ON books_account_book(account_info_id, when_time, id)""",
       );
       await txn.execute(
-        """CREATE INDEX "books_account_book_aim_account_id_f5979f3c" ON "books_account_book" ("aim_account_id" ASC)""",
+        """CREATE INDEX IF NOT EXISTS idx_book_aim_time_id ON books_account_book(aim_account_id, when_time, id)""",
+      );
+      await txn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_book_when_time_id ON books_account_book(when_time, id)""",
       );
       await txn.execute(
         """CREATE INDEX "books_account_book_types_id_5b535171" ON "books_account_book" ("types_id" ASC)""",

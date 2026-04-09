@@ -30,7 +30,7 @@ dependencies:
   #访问常用位置
   path_provider: ^2.1.5
   #文件选择器
-  file_picker: ^10.3.3
+  file_picker: ^10.3.10
   #sqlcipher
   sqflite_sqlcipher: ^3.3.0
   #路径拼接
@@ -38,13 +38,13 @@ dependencies:
   #时间选择器
   flutter_datetime_picker_plus: ^2.2.0
   #选择器,这个选择器也可以选择时间，可以根据自己的喜好选择
-  flutter_picker_plus: ^1.5.2
+  flutter_picker_plus: ^1.5.6
   #获取应用各类信息
-  package_info_plus: ^9.0.0
+  package_info_plus: ^9.0.1
   #无限滚动
   infinite_scroll_pagination: ^5.1.1
   #图标
-  fl_chart: ^1.1.1
+  fl_chart: ^1.2.0
   #重启应用
   #restart_app: ^1.2.1
   #获取权限
@@ -57,18 +57,18 @@ dependencies:
   #国际化与本地化
   intl: ^0.20.2
   #本地通知
-  flutter_local_notifications: ^19.5.0
+  flutter_local_notifications: ^21.0.0
   #定时任务
   workmanager: ^0.7.0
   #安全存储
-  flutter_secure_storage: ^9.2.3
+  flutter_secure_storage: ^10.0.0
   #设备信息
   device_info_plus: ^12.3.0
   #日历显示
   table_calendar: ^3.2.0
   # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
-  installed_apps: ^2.0.0
+  cupertino_icons: ^1.0.9
+  installed_apps: ^2.1.1
 
 dev_dependencies:
   flutter_test:

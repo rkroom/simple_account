@@ -14,7 +14,6 @@ import kotlinx.coroutines.launch
 
 class MyNotificationListenerService : NotificationListenerService() {
 
-    private val billManager by lazy { BillDataStoreManager.getInstance(this) }
     private val configManager by lazy { ConfigDataStoreManager.getInstance(this) }
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var cachedAllowPackageName: Set<String> = emptySet()
@@ -54,6 +53,7 @@ class MyNotificationListenerService : NotificationListenerService() {
                         appName = appName
                 )
         BillDataStoreManager.getInstance(applicationContext).saveBillAsync(notificationData)
+        AppLog.i { "账单已保存-通知: ${notificationData.appName}" }
     }
 
     private suspend fun handleNotification(
@@ -76,15 +76,18 @@ class MyNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onCreate() {
+        AppLog.i { "通知监听服务已创建" }
         super.onCreate()
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        AppLog.i { "通知监听服务已销毁" }
         serviceScope.cancel()
+        super.onDestroy()
     }
 
     override fun onListenerConnected() {
+        AppLog.i { "通知监听服务已连接" }
         super.onListenerConnected()
         observeNotificationConfig()
     }

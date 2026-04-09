@@ -21,6 +21,8 @@ import kotlinx.coroutines.*
  * @param recordId 数据库 ID
  * @param timestamp 首次创建时的时间戳
  * @param lastEmptyTriggerTime 上次触发 EmptyNode 规则的时间戳 (0 表示未触发过)
+ * @param lastContent 上次缓存的 content，用于字段合并
+ * @param lastPayment 上次缓存的 payment，用于字段合并
  */
 private data class PageCacheEntry(
         // 屏幕旋转、系统深色模式切换等 Configuration Change 会导致 Activity 重建，WindowID 会发生改变
@@ -29,7 +31,9 @@ private data class PageCacheEntry(
         val isComplete: Boolean,
         val recordId: String,
         val timestamp: Long,
-        val lastEmptyTriggerTime: Long = 0L
+        val lastEmptyTriggerTime: Long = 0L,
+        val lastContent: String? = null,
+        val lastPayment: String? = null
 )
 
 // 对同一个 PageIdentifier 的全部规则做一次“路径画像”
@@ -74,9 +78,31 @@ class MyAccessibilityService : AccessibilityService() {
 
     @Volatile private var currentPageId: PageIdentifier? = null // 当前页面ID (包名/类名)
     @Volatile private var currentWindowId: Int = -1
+
     // 如果在多线程情况下崩溃可以考虑synchronized封装
     private val lastCacheByPage = LruCache<PageIdentifier, PageCacheEntry>(PAGE_HASH_CACHE_SIZE)
     private val ruleCache = LruCache<PageIdentifier, PageRuleBundle>(RULE_CACHE_SIZE)
+
+    // 为 LRUCache 加锁
+    private val lruCacheLock = Any()
+
+    private fun getLastCacheEntry(pageIdentifier: PageIdentifier): PageCacheEntry? =
+            synchronized(lruCacheLock) { lastCacheByPage.get(pageIdentifier) }
+
+    private fun putLastCacheEntry(pageIdentifier: PageIdentifier, entry: PageCacheEntry) =
+            synchronized(lruCacheLock) { lastCacheByPage.put(pageIdentifier, entry) }
+
+    private fun evictAllLastCacheEntries() =
+            synchronized(lruCacheLock) { lastCacheByPage.evictAll() }
+
+    private fun getRuleBundleFromCache(pageIdentifier: PageIdentifier): PageRuleBundle? =
+            synchronized(lruCacheLock) { ruleCache.get(pageIdentifier) }
+
+    private fun putRuleBundleToCache(pageIdentifier: PageIdentifier, bundle: PageRuleBundle) =
+            synchronized(lruCacheLock) { ruleCache.put(pageIdentifier, bundle) }
+
+    private fun evictAllRuleBundles() = synchronized(lruCacheLock) { ruleCache.evictAll() }
+
     private val pageTriggerCounts = ConcurrentHashMap<PageIdentifier, Int>()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
@@ -117,10 +143,10 @@ class MyAccessibilityService : AccessibilityService() {
                 isContentChangeEnabled = config.isContentChangeEnabled
 
                 // 清空规则查找缓存，因为规则可能变了
-                ruleCache.evictAll()
+                evictAllRuleBundles()
 
                 // 清空页面缓存，避免“已完成”的旧状态影响新规则
-                lastCacheByPage.evictAll()
+                evictAllLastCacheEntries()
 
                 // 更新 ServiceInfo (必须在主线程执行)
                 withContext(Dispatchers.Main) { updateServiceInfo(config) }
@@ -169,7 +195,7 @@ class MyAccessibilityService : AccessibilityService() {
             val className = event.className?.toString() ?: AppConstants.UNKNOWN_CLASS
             val newPageId = PageIdentifier(packageName, className)
 
-            val lastEntry = lastCacheByPage.get(newPageId)
+            val lastEntry = getLastCacheEntry(newPageId)
             if (lastEntry != null && lastEntry.windowId == eventWindowId && lastEntry.isComplete) {
                 return
             }
@@ -177,7 +203,10 @@ class MyAccessibilityService : AccessibilityService() {
             AppLog.d {
                 "[$TAG] WindowStateChanged: $packageName / $className (WinID: $eventWindowId)"
             }
-            handleWindowStateChanged(newPageId)
+
+            //  在事件发生时捕获 targetWindowId
+            val targetWindowId = eventWindowId
+            handleWindowStateChanged(newPageId, targetWindowId)
         } else if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             if (eventWindowId != currentWindowId) {
                 return
@@ -188,7 +217,10 @@ class MyAccessibilityService : AccessibilityService() {
             if (!isContentChangeEnabled) return
 
             // AppLog.v { "[$TAG] ContentChanged: WinID: $eventWindowId" }
-            handleWindowContentChanged(event, activePageId)
+
+            // 在事件发生时捕获 targetWindowId
+            val targetWindowId = eventWindowId
+            handleWindowContentChanged(event, activePageId, targetWindowId)
         }
     }
 
@@ -267,7 +299,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     /** 按 PageIdentifier 缓存/获取所有匹配该 Activity 的规则（按配置顺序） */
     private fun getOrFindRuleBundle(pageIdentifier: PageIdentifier): PageRuleBundle {
-        ruleCache.get(pageIdentifier)?.let {
+        getRuleBundleFromCache(pageIdentifier)?.let {
             return it
         }
 
@@ -303,7 +335,7 @@ class MyAccessibilityService : AccessibilityService() {
                 )
 
         // 就算 rules 为空也缓存，避免后续重复计算
-        ruleCache.put(pageIdentifier, bundle)
+        putRuleBundleToCache(pageIdentifier, bundle)
         return bundle
     }
 
@@ -347,7 +379,7 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     // 如遇线程问题导致的崩溃，可考虑在防抖结束之后切换到主线程生成节点快照，然后在后台线程处理
-    private fun handleWindowStateChanged(newPageId: PageIdentifier) {
+    private fun handleWindowStateChanged(newPageId: PageIdentifier, targetWindowId: Int) {
         val oldPageId = currentPageId
         currentPageId = newPageId
 
@@ -402,7 +434,7 @@ class MyAccessibilityService : AccessibilityService() {
                                     withContext(Dispatchers.Main) {
                                         try {
                                             if (currentPageId != newPageId) null
-                                            else getRootInWindow(currentWindowId)
+                                            else getRootInWindow(targetWindowId)
                                         } catch (e: Exception) {
                                             null
                                         }
@@ -414,7 +446,7 @@ class MyAccessibilityService : AccessibilityService() {
                                     if (hasLazyRule) Extractor.LazyNodeProvider(root) else null
 
                             try {
-                                val lastEntry = lastCacheByPage.get(newPageId)
+                                val lastEntry = getLastCacheEntry(newPageId)
                                 if (lastEntry != null &&
                                                 lastEntry.windowId == currentWindowId &&
                                                 lastEntry.isComplete
@@ -500,7 +532,10 @@ class MyAccessibilityService : AccessibilityService() {
                             attempt++
                         }
                     } finally {
-                        windowChangeDebounceJobs.remove(newPageId)
+                        val selfJob = this.coroutineContext[Job]
+                        if (selfJob != null) {
+                            windowChangeDebounceJobs.remove(newPageId, selfJob)
+                        }
                     }
                 }
 
@@ -522,10 +557,14 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleWindowContentChanged(event: AccessibilityEvent, pageId: PageIdentifier) {
-        val lastEntry = lastCacheByPage.get(pageId)
-        if (lastEntry != null && lastEntry.windowId == currentWindowId && lastEntry.isComplete) {
-            // AppLog.v { "[$TAG] 窗口($currentWindowId)已提取完成，忽略 ContentChange" }
+    private fun handleWindowContentChanged(
+            event: AccessibilityEvent,
+            pageId: PageIdentifier,
+            targetWindowId: Int
+    ) {
+        val lastEntry = getLastCacheEntry(pageId)
+        if (lastEntry != null && lastEntry.windowId == targetWindowId && lastEntry.isComplete) {
+            // AppLog.v { "[$TAG] 窗口($targetWindowId)已提取完成，忽略 ContentChange" }
             return
         }
 
@@ -569,13 +608,13 @@ class MyAccessibilityService : AccessibilityService() {
                         val root =
                                 withContext(Dispatchers.Main) {
                                     try {
-                                        getRootInWindow(currentWindowId)
+                                        getRootInWindow(targetWindowId)
                                     } catch (e: Exception) {
                                         null
                                     }
                                 }
 
-                        if (root == null || root.windowId != currentWindowId) {
+                        if (root == null || root.windowId != targetWindowId) {
                             root?.let {
                                 try {
                                     it.recycle()
@@ -591,7 +630,7 @@ class MyAccessibilityService : AccessibilityService() {
                                 if (hasLazyRule) Extractor.LazyNodeProvider(root) else null
 
                         try {
-                            val freshLast = lastCacheByPage.get(pageId)
+                            val freshLast = getLastCacheEntry(pageId)
                             if (freshLast != null &&
                                             freshLast.windowId == currentWindowId &&
                                             freshLast.isComplete
@@ -637,7 +676,10 @@ class MyAccessibilityService : AccessibilityService() {
                             } catch (e: Exception) {}
                         }
                     } finally {
-                        contentChangeDebounceJobs.remove(pageId)
+                        val selfJob = this.coroutineContext[Job]
+                        if (selfJob != null) {
+                            contentChangeDebounceJobs.remove(pageId, selfJob)
+                        }
                     }
                 }
         contentChangeDebounceJobs[pageId] = job
@@ -651,18 +693,31 @@ class MyAccessibilityService : AccessibilityService() {
             currentWindowId: Int,
             updateEmptyTriggerTime: Long?
     ) {
-        val lastEntry = lastCacheByPage.get(pageIdentifier)
+        val lastEntry = getLastCacheEntry(pageIdentifier)
 
         val usingEmptyNodeTrigger = rule.triggerOnEmptyNodes
+
+        val previousContent = lastEntry?.lastContent
+        val previousPayment = lastEntry?.lastPayment
+
+        val mergedContent =
+                when {
+                    content == null -> previousContent
+                    content.isEmpty() && !previousContent.isNullOrEmpty() -> previousContent
+                    else -> content
+                }
+
+        val mergedPayment = payment ?: previousPayment
 
         // 当前数据是否“完整”
         val isCurrentDataComplete =
                 if (usingEmptyNodeTrigger) {
-                    // triggerOnEmptyNodes：进入页面即视为一次“完整记录”，
+                    // triggerOnEmptyNodes：进入页面即视为一次“完整记录”
                     true
                 } else {
-                    // 常规提取：必须有内容（content可能仅为关键词本身），且满足支付方式要求才算完整
-                    !content.isNullOrEmpty() && (!rule.hasPaymentInfo || payment != null)
+                    // 常规提取：以合并后的字段判断完整性
+                    !mergedContent.isNullOrEmpty() &&
+                            (!rule.hasPaymentInfo || mergedPayment != null)
                 }
 
         var shouldSave = false
@@ -709,15 +764,17 @@ class MyAccessibilityService : AccessibilityService() {
                             isComplete = isCurrentDataComplete,
                             recordId = targetRecordId,
                             timestamp = cacheTimestamp,
-                            lastEmptyTriggerTime = newTriggerTime
+                            lastEmptyTriggerTime = newTriggerTime,
+                            lastContent = mergedContent,
+                            lastPayment = mergedPayment
                     )
-            lastCacheByPage.put(pageIdentifier, newEntry)
+            putLastCacheEntry(pageIdentifier, newEntry)
 
-            if (content != null || payment != null || rule.triggerOnEmptyNodes) {
+            if (mergedContent != null || mergedPayment != null || rule.triggerOnEmptyNodes) {
                 AppLog.i {
                     "写入数据库 [$logReason]: ID=$targetRecordId, Win=$currentWindowId, 完整=$isCurrentDataComplete"
                 }
-                saveData(pageIdentifier, content, payment, targetRecordId, currentTime)
+                saveData(pageIdentifier, mergedContent, mergedPayment, targetRecordId, currentTime)
             }
         }
     }
@@ -738,15 +795,10 @@ class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (BuildConfig.DEBUG) {
-            withContext(Dispatchers.Main) {
-                val toastMessage = "记录已保存，来自：$packageName"
-                Toast.makeText(this@MyAccessibilityService, toastMessage, Toast.LENGTH_SHORT).show()
-            }
-        }
-
         AppLog.d { "saveData 方法被调用，准备构建 billData..." }
-        val appName = AppUtils.getAppName(applicationContext, packageName)
+
+        val sourceAppName = AppUtils.getAppName(applicationContext, packageName)
+        val selfAppName = getString(R.string.app_name)
 
         val data =
                 BillData(
@@ -756,9 +808,36 @@ class MyAccessibilityService : AccessibilityService() {
                         packageName = packageName,
                         postTime = timestamp,
                         payment = payment,
-                        appName = appName
+                        appName = sourceAppName
                 )
+
         BillDataStoreManager.getInstance(applicationContext).saveBillAsync(data)
+
+        withContext(Dispatchers.Main) {
+            val detailParts = buildList {
+                if (!content.isNullOrBlank()) add(content)
+                if (!payment.isNullOrBlank()) add("支付方式: $payment")
+            }
+
+            val detailText = detailParts.joinToString("，")
+
+            val toastMessage =
+                    if (BuildConfig.DEBUG) {
+                        if (detailText.isBlank()) {
+                            "$selfAppName：已记录。$packageName"
+                        } else {
+                            "$selfAppName：已记录，$detailText。$packageName"
+                        }
+                    } else {
+                        if (detailText.isBlank()) {
+                            "$selfAppName：已记录。"
+                        } else {
+                            "$selfAppName：已记录，$detailText"
+                        }
+                    }
+
+            Toast.makeText(this@MyAccessibilityService, toastMessage, Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onInterrupt() {
