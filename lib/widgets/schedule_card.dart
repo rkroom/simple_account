@@ -5,6 +5,7 @@ import 'package:table_calendar/table_calendar.dart';
 import '../tools/config_enum.dart';
 import '../tools/db.dart';
 import '../tools/entity.dart';
+import '../tools/schedule_rule_helper.dart';
 import 'edit_schedule.dart';
 import '../tools/tools.dart';
 
@@ -21,44 +22,6 @@ class ScheduleCard extends StatelessWidget {
   String _formatDate(String dateTimeString) {
     final dt = DateTime.parse(dateTimeString);
     return DateFormat('yyyy-MM-dd').format(dt);
-  }
-
-  String _formatCycle(ScheduleItem item) {
-    switch (item.cycleValue) {
-      case ScheduleCycle.day:
-        return '每天';
-      case ScheduleCycle.week:
-        const weekMap = {
-          '1': '一',
-          '2': '二',
-          '3': '三',
-          '4': '四',
-          '5': '五',
-          '6': '六',
-          '7': '日',
-        };
-        return '每周${weekMap[item.dateSign] ?? ''}';
-      case ScheduleCycle.month:
-        try {
-          return '每月${int.parse(item.dateSign)}日';
-        } catch (e) {
-          return '每月${item.dateSign}日';
-        }
-      case ScheduleCycle.year:
-        if (item.finalDate != null && item.finalDate!.isNotEmpty) {
-          try {
-            final date = DateTime.parse(item.finalDate!);
-            return '每年${DateFormat('M月d日', 'zh_CN').format(date)}';
-          } catch (e) {
-            return '每年';
-          }
-        }
-        return '每年';
-      case ScheduleCycle.custom:
-        return '每${item.dateSign}天';
-      case ScheduleCycle.once:
-        return '';
-    }
   }
 
   Future<bool?> _showEditHandleDialog(
@@ -151,7 +114,7 @@ class ScheduleCard extends StatelessWidget {
   }
 
   void _showDetailsDialog(BuildContext context) {
-    final cycleText = _formatCycle(item);
+    final cycleText = formatScheduleCycle(item);
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
@@ -499,8 +462,8 @@ class ScheduleCard extends StatelessWidget {
                                                     record,
                                                   );
                                               if (updated == true) {
-                                                dialogSetState(() {}); // 刷新对话框
-                                                onDataRefreshed(); // 刷新主屏幕
+                                                dialogSetState(() {});
+                                                onDataRefreshed();
                                               }
                                             } else if (action == 'delete') {
                                               final bool?
@@ -551,10 +514,8 @@ class ScheduleCard extends StatelessWidget {
                                                       context,
                                                       '记录已删除',
                                                     );
-                                                    dialogSetState(
-                                                      () {},
-                                                    ); // 刷新对话框
-                                                    onDataRefreshed(); // 刷新主屏幕
+                                                    dialogSetState(() {});
+                                                    onDataRefreshed();
                                                   }
                                                 } catch (e) {
                                                   if (context.mounted) {
@@ -844,53 +805,6 @@ class ScheduleCard extends StatelessWidget {
     );
   }
 
-  DateTime _subtractMonths(DateTime from, int months) {
-    int targetYear = from.year;
-    int targetMonth = from.month - months;
-
-    while (targetMonth <= 0) {
-      targetMonth += 12;
-      targetYear -= 1;
-    }
-    final lastDayOfTargetMonth = DateTime(targetYear, targetMonth + 1, 0).day;
-    final day =
-        from.day > lastDayOfTargetMonth ? lastDayOfTargetMonth : from.day;
-    return DateTime(
-      targetYear,
-      targetMonth,
-      day,
-      from.hour,
-      from.minute,
-      from.second,
-      from.millisecond,
-      from.microsecond,
-    );
-  }
-
-  DateTime? _getPreviousDueDate(DateTime currentDueDate, ScheduleItem item) {
-    if (item.cycleValue == ScheduleCycle.once) return null;
-
-    switch (item.cycleValue) {
-      case ScheduleCycle.day:
-        return currentDueDate.subtract(const Duration(days: 1));
-      case ScheduleCycle.week:
-        return currentDueDate.subtract(const Duration(days: 7));
-
-      case ScheduleCycle.custom:
-        final days = int.tryParse(item.dateSign);
-        if (days == null || days <= 0) return null;
-        return currentDueDate.subtract(Duration(days: days));
-
-      case ScheduleCycle.month:
-        return _subtractMonths(currentDueDate, 1);
-
-      case ScheduleCycle.year:
-        return _subtractMonths(currentDueDate, 12);
-      default:
-        return null;
-    }
-  }
-
   Widget _buildMissedTaskWarning() {
     if (item.status != ScheduleStatus.continuing) {
       return const SizedBox.shrink();
@@ -916,12 +830,12 @@ class ScheduleCard extends StatelessWidget {
         final currentDueDate = DateTime.tryParse(item.date);
         if (currentDueDate == null) return const SizedBox.shrink();
 
-        final previousDueDate = _getPreviousDueDate(currentDueDate, item);
+        final previousDueDate = getPreviousDueDateForItem(item, currentDueDate);
         if (previousDueDate == null) return const SizedBox.shrink();
 
-        final previousPreviousDueDate = _getPreviousDueDate(
-          previousDueDate,
+        final previousPreviousDueDate = getPreviousDueDateForItem(
           item,
+          previousDueDate,
         );
         if (previousPreviousDueDate == null) return const SizedBox.shrink();
 

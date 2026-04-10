@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../tools/config_enum.dart';
@@ -19,6 +21,11 @@ class AddScheduleWidget extends StatelessWidget {
     DateTime? expectDate,
     int? selectedDay,
     String? dateSign,
+    int? quarterMonthOfQuarter,
+    int? quarterDayOfMonth,
+    int? quarterDayOfQuarter,
+    int? monthAfterAnchorDay,
+    int? monthAfterOffsetDays,
   }) async {
     try {
       if (createDate == null) {
@@ -29,6 +36,7 @@ class AddScheduleWidget extends StatelessWidget {
         'created': DateFormat(_dateTimeFormat).format(createDate),
         'content': content,
         'round': cycle.name,
+        'rule_type': cycle.name,
       };
 
       switch (cycle) {
@@ -53,6 +61,37 @@ class AddScheduleWidget extends StatelessWidget {
           }
           scheduleMap['finaldate'] = DateFormat(_dateFormat).format(expectDate);
           scheduleMap['datesign'] = dateSign;
+          break;
+
+        case ScheduleCycle.quarterMonthDay:
+          if (quarterMonthOfQuarter == null || quarterDayOfMonth == null) {
+            throw '请填写季度内月份和日期';
+          }
+          scheduleMap['rule_params'] = jsonEncode({
+            'monthOfQuarter': quarterMonthOfQuarter,
+            'dayOfMonth': quarterDayOfMonth,
+          });
+          break;
+
+        case ScheduleCycle.quarterDay:
+          if (quarterDayOfQuarter == null || quarterDayOfQuarter <= 0) {
+            throw '请填写季度第几天';
+          }
+          scheduleMap['rule_params'] = jsonEncode({
+            'dayOfQuarter': quarterDayOfQuarter,
+          });
+          break;
+
+        case ScheduleCycle.monthAfterDay:
+          if (monthAfterAnchorDay == null ||
+              monthAfterOffsetDays == null ||
+              monthAfterOffsetDays <= 0) {
+            throw '请填写每月几号之后和之后第几天';
+          }
+          scheduleMap['rule_params'] = jsonEncode({
+            'anchorDay': monthAfterAnchorDay,
+            'offsetDays': monthAfterOffsetDays,
+          });
           break;
       }
 

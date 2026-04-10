@@ -20,21 +20,24 @@ enum AccountType {
 }
 
 enum ScheduleCycle {
-  once('一次'),
   day('每天'),
   week('每周'),
   month('每月'),
   year('每年'),
-  custom('自定义');
+  once('一次'),
+  custom('自定义'),
+
+  quarterMonthDay('季度'),
+  quarterDay('季度：自定义'),
+  monthAfterDay('每月：自定义');
 
   final String label;
-
   const ScheduleCycle(this.label);
 
   static ScheduleCycle fromString(String value) {
     return ScheduleCycle.values.firstWhere(
-      (e) => e.name == value.toLowerCase(),
-      orElse: () => ScheduleCycle.custom,
+      (e) => e.name == value,
+      orElse: () => ScheduleCycle.once,
     );
   }
 }

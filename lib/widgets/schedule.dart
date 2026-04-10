@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:simple_account/widgets/schedule_calendar_view.dart';
 import 'package:table_calendar/table_calendar.dart';
 
 import '../tools/config_enum.dart';
 import '../tools/db.dart';
 import '../tools/entity.dart';
+import '../tools/schedule_rule_helper.dart';
 import 'schedule_list_view.dart';
 
 class ScheduleWidget extends StatefulWidget {
@@ -63,101 +63,37 @@ class _ScheduleWidgetState extends State<ScheduleWidget> {
   Future<List<ScheduleItem>> _loadScheduleItems() async {
     final List rawData = await DB().getScheduledTasks();
     final now = DateTime.now();
-    final formatter = DateFormat('yyyy-MM-dd');
 
     List<ScheduleItem> allItems =
         rawData.map((task) {
           final int taskId = task['id'] ?? 0;
-          final String roundStr = task['round'].toString();
-          final ScheduleCycle cycle = ScheduleCycle.fromString(roundStr);
+
+          final String ruleType =
+              (task['rule_type'] ?? task['round'] ?? '').toString();
+          final ScheduleCycle cycle = ScheduleCycle.fromString(ruleType);
+
+          final Map<String, dynamic>? ruleParams = parseRuleParams(
+            task['rule_params'],
+          );
+
           final String dateSign = task['datesign']?.toString() ?? '';
-          final String? finalDateValue = task['finaldatef']?.toString();
+          final String? finalDateValue =
+              task['finaldatef']?.toString() ?? task['finaldate']?.toString();
 
           final String statusStr = task['status'].toString();
           final ScheduleStatus status = ScheduleStatus.fromString(statusStr);
 
-          String date;
-
-          switch (cycle) {
-            case ScheduleCycle.day:
-              date = formatter.format(now);
-              break;
-            case ScheduleCycle.week:
-              final targetWeekday = int.tryParse(dateSign) ?? now.weekday;
-              var daysToAdd = targetWeekday - now.weekday;
-              if (daysToAdd <= 0) {
-                daysToAdd += 7;
-              }
-              final targetDate = now.add(Duration(days: daysToAdd));
-              date = formatter.format(targetDate);
-              break;
-            case ScheduleCycle.month:
-              final targetDay = int.tryParse(dateSign) ?? now.day;
-              var targetDate = DateTime(now.year, now.month, targetDay);
-              if (targetDate.isBefore(DateTime(now.year, now.month, now.day))) {
-                targetDate = DateTime(now.year, now.month + 1, targetDay);
-              }
-              date = formatter.format(targetDate);
-              break;
-            case ScheduleCycle.once:
-              date = task['finaldatef'] ?? dateSign;
-              break;
-            case ScheduleCycle.custom:
-              if (finalDateValue == null || finalDateValue.isEmpty) {
-                throw FormatException('起始日期为空或无效，无法解析自定义周期起始日期.');
-              }
-              DateTime startDate;
-              try {
-                startDate = DateTime.parse(finalDateValue);
-              } catch (e) {
-                throw FormatException('无法解析起始日期: "$finalDateValue" 为有效日期.');
-              }
-
-              int intervalDays;
-              try {
-                intervalDays = int.parse(dateSign);
-                if (intervalDays <= 0) {
-                  throw FormatException('天数: "$dateSign" 必须是正整数，表示间隔天数.');
-                }
-              } catch (e) {
-                if (e is FormatException) rethrow;
-                throw FormatException('无法解析 dateSign: "$dateSign" 为有效天数.');
-              }
-
-              DateTime nextCycleDate = startDate;
-              final today = DateTime(now.year, now.month, now.day);
-
-              if (startDate.isAfter(today)) {
-                nextCycleDate = startDate;
-              } else {
-                final difference = today.difference(startDate).inDays;
-                final cyclesPassed = (difference / intervalDays).ceil();
-                nextCycleDate = startDate.add(
-                  Duration(days: cyclesPassed * intervalDays),
-                );
-
-                if (nextCycleDate.isBefore(today)) {
-                  nextCycleDate = nextCycleDate.add(
-                    Duration(days: intervalDays),
-                  );
-                }
-              }
-              date = formatter.format(nextCycleDate);
-              break;
-            case ScheduleCycle.year:
-              final monthDay = finalDateValue!.substring(5);
-              final currentYear = DateTime.now().year;
-              date = '$currentYear-$monthDay';
-              final parsedDate = DateTime.parse(date);
-              final today = DateTime(now.year, now.month, now.day);
-              if (parsedDate.isBefore(today)) {
-                date = '${currentYear + 1}-$monthDay';
-              }
-              break;
-          }
+          final String date = calcNextScheduleDate(
+            now: now,
+            cycle: cycle,
+            dateSign: dateSign,
+            finalDateValue: finalDateValue,
+            ruleParams: ruleParams,
+          );
 
           final String? lastCompleted = task['handledate']?.toString();
           final String? finishedDate = task['finishedf']?.toString();
+
           return ScheduleItem(
             id: taskId,
             content: task['content']?.toString() ?? '无内容',
@@ -169,6 +105,7 @@ class _ScheduleWidgetState extends State<ScheduleWidget> {
             status: status,
             dateSign: dateSign,
             finalDate: finalDateValue,
+            ruleParams: ruleParams,
           );
         }).toList();
 

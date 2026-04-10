@@ -44,7 +44,7 @@ class DB {
   Future<Database> _initDB(path, password) async {
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
       password: password,
@@ -59,7 +59,23 @@ class DB {
   ///
   /// 更新Table
   ///
-  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {}
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+        'ALTER TABLE schemes_project_info ADD COLUMN rule_type TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE schemes_project_info ADD COLUMN rule_params TEXT',
+      );
+
+      // 老数据回填，便于统一读取
+      await db.execute('''
+      UPDATE schemes_project_info
+      SET rule_type = round
+      WHERE rule_type IS NULL AND round IS NOT NULL
+    ''');
+    }
+  }
 
   Future<int> updateScheduleDetails(
     int id,
@@ -72,6 +88,8 @@ class DB {
       updates['round'],
       updates['finaldate'],
       updates['datesign'],
+      updates['rule_type'],
+      updates['rule_params'],
       id,
     ];
 
@@ -81,7 +99,9 @@ class DB {
       content = ?, 
       round = ?, 
       finaldate = ?, 
-      datesign = ?
+      datesign = ?,
+      rule_type = ?,
+      rule_params = ?
     WHERE id = ?
     ''', args);
   }
@@ -1255,6 +1275,8 @@ JOIN TopValues t on a.id = t.account_info_id""",
       "status" varchar(30) NOT NULL,
       "round" varchar(30),
       "datesign" integer,
+      "rule_type" TEXT,
+      "rule_params" TEXT,
       "updated" datetime NOT NULL DEFAULT (datetime('now','localtime')),
       "recordtime" datetime NOT NULL DEFAULT (datetime('now','localtime')))""");
       await txn.execute(

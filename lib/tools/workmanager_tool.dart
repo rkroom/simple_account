@@ -1,15 +1,14 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
-import 'package:intl/intl.dart';
 
 import 'config_enum.dart';
 import 'config_service.dart';
 import 'notification_service.dart';
 import 'tools.dart';
 import 'db.dart';
+import 'schedule_rule_helper.dart';
 
 class WorkmanagerTasks {
   // 每日统计任务
@@ -53,6 +52,7 @@ void callbackDispatcher() {
       }
       return Future.value(taskSuccess);
     } catch (e) {
+      debugPrint('Workmanager 执行失败: $e');
       return Future.value(false);
     } finally {
       if (task == WorkmanagerTasks.dailyTaskName) {
@@ -162,184 +162,59 @@ Future<void> handleScheduledNotifications() async {
   final notificationService = NotificationService();
 
   for (var task in tasks) {
-    final round = ScheduleCycle.fromString(task['round']);
-    DateTime? targetDate;
+    try {
+      final String cycleRaw =
+          (task['rule_type'] ?? task['round'] ?? '').toString();
+      final ScheduleCycle round = ScheduleCycle.fromString(cycleRaw);
 
-    final String? finalDatefValue = task['finaldatef']?.toString();
+      final Map<String, dynamic>? ruleParams = parseRuleParams(
+        task['rule_params'],
+      );
 
-    switch (round) {
-      case ScheduleCycle.day:
-        targetDate = today;
-        break;
-      case ScheduleCycle.week:
-        final int dayOfWeek = int.tryParse(task['datesign'].toString()) ?? -1;
-        if (dayOfWeek == -1) continue;
-        targetDate = today;
-        while (targetDate!.weekday != dayOfWeek) {
-          targetDate = targetDate.add(const Duration(days: 1));
-        }
-        break;
-      case ScheduleCycle.month:
-        final int dayOfMonth = int.tryParse(task['datesign'].toString()) ?? -1;
-        if (dayOfMonth < 1 || dayOfMonth > 31) continue;
-        final int daysInCurrentMonth =
-            DateTime(today.year, today.month + 1, 0).day;
-        final int effectiveDayThisMonth = min(dayOfMonth, daysInCurrentMonth);
-        DateTime potentialTargetThisMonth = DateTime(
-          today.year,
-          today.month,
-          effectiveDayThisMonth,
-        );
-        if (potentialTargetThisMonth.isBefore(today)) {
-          final DateTime nextMonthFirstDay = DateTime(
-            today.year,
-            today.month + 1,
-            1,
-          );
-          final int daysInNextMonth =
-              DateTime(
-                nextMonthFirstDay.year,
-                nextMonthFirstDay.month + 1,
-                0,
-              ).day;
-          final int effectiveDayNextMonth = min(dayOfMonth, daysInNextMonth);
-          targetDate = DateTime(
-            nextMonthFirstDay.year,
-            nextMonthFirstDay.month,
-            effectiveDayNextMonth,
-          );
-        } else {
-          targetDate = potentialTargetThisMonth;
-        }
-        break;
-      case ScheduleCycle.year:
-        if (finalDatefValue != null && finalDatefValue.length >= 10) {
-          try {
-            final DateFormat parser = DateFormat('yyyy-MM-dd');
-            final DateTime parsedFinalDate = parser.parse(finalDatefValue);
+      final String? finalDateValue =
+          task['finaldatef']?.toString() ?? task['finaldate']?.toString();
 
-            final int targetMonth = parsedFinalDate.month;
-            final int targetDay = parsedFinalDate.day;
+      final String targetDateStr = calcNextScheduleDate(
+        now: today,
+        cycle: round,
+        dateSign: task['datesign']?.toString(),
+        finalDateValue: finalDateValue,
+        ruleParams: ruleParams,
+      );
 
-            int yearToConsider = today.year;
-            DateTime potentialTargetDate = DateTime(
-              yearToConsider,
-              targetMonth,
-              targetDay,
-            );
+      final DateTime targetDate = normalizeDate(DateTime.parse(targetDateStr));
+      if (targetDate.isBefore(today)) {
+        continue;
+      }
 
-            if (potentialTargetDate.isBefore(today)) {
-              yearToConsider++;
-              final int daysInTargetMonthNextYear =
-                  DateTime(yearToConsider, targetMonth + 1, 0).day;
-              potentialTargetDate = DateTime(
-                yearToConsider,
-                targetMonth,
-                min(targetDay, daysInTargetMonthNextYear),
-              );
-            }
-            targetDate = potentialTargetDate;
-          } catch (e) {
-            debugPrint('解析年度计划任务 finaldatef 失败: $finalDatefValue, 错误: $e');
-            continue;
-          }
-        } else {
-          debugPrint('年度计划任务 finaldatef 格式不正确或为空: $finalDatefValue');
-          continue;
-        }
-        break;
-      case ScheduleCycle.once:
-        try {
-          targetDate = DateTime.parse(task['finaldate']);
-        } catch (e) {
-          debugPrint(
-            '解析一次性计划任务 finaldate 失败: ${task['finaldatef'] ?? task['datesign']}, 错误: $e',
-          );
-          continue;
-        }
-        break;
+      final int daysUntil = targetDate.difference(today).inDays;
+      bool shouldNotify = false;
+      String notificationTitle = "提醒";
 
-      case ScheduleCycle.custom:
-        try {
-          final DateTime baseDate = DateTime.parse(
-            task['finaldatef'].toString(),
-          );
-          final int intervalDays =
-              int.tryParse(task['datesign'].toString()) ?? 0;
-
-          if (intervalDays <= 0) {
-            continue;
-          }
-
-          if (baseDate.isAfter(today) || baseDate.isAtSameMomentAs(today)) {
-            targetDate = baseDate;
-          } else {
-            final int diffInDays = today.difference(baseDate).inDays;
-            final int intervalsNeeded =
-                (diffInDays.toDouble() / intervalDays).ceil();
-            targetDate = baseDate.add(
-              Duration(days: intervalsNeeded * intervalDays),
-            );
-          }
-        } catch (e) {
-          debugPrint(
-            '解析自定义计划任务 finaldatef/datesign 失败: ${task['finaldatef'] ?? task['datesign']}, 错误: $e',
-          );
-          continue;
-        }
-        break;
-    }
-
-    if (targetDate.isBefore(today)) {
-      continue;
-    }
-
-    final int daysUntil = targetDate.difference(today).inDays;
-    bool shouldNotify = false;
-    String notificationTitle = "提醒";
-
-    switch (round) {
-      case ScheduleCycle.day:
-        if (daysUntil == 0) {
-          shouldNotify = true;
-          notificationTitle = "今天";
-        }
-        break;
-
-      case ScheduleCycle.week:
-        if (daysUntil == 1) {
-          shouldNotify = true;
-          notificationTitle = "明天";
-        } else if (daysUntil == 0) {
-          shouldNotify = true;
-          notificationTitle = "今天";
-        }
-        break;
-
-      case ScheduleCycle.month:
-      case ScheduleCycle.year:
-      case ScheduleCycle.once:
-        if (daysUntil >= 0 && daysUntil <= 2) {
-          shouldNotify = true;
-          if (daysUntil == 2) {
-            notificationTitle = "后天";
-          } else if (daysUntil == 1) {
-            notificationTitle = "明天";
-          } else {
-            notificationTitle = "今天";
-          }
-        }
-        break;
-
-      case ScheduleCycle.custom:
-        final int intervalDays = int.tryParse(task['datesign'].toString()) ?? 0;
-
-        if (intervalDays > 0 && intervalDays < 3) {
+      switch (round) {
+        case ScheduleCycle.day:
           if (daysUntil == 0) {
             shouldNotify = true;
             notificationTitle = "今天";
           }
-        } else {
+          break;
+
+        case ScheduleCycle.week:
+          if (daysUntil == 1) {
+            shouldNotify = true;
+            notificationTitle = "明天";
+          } else if (daysUntil == 0) {
+            shouldNotify = true;
+            notificationTitle = "今天";
+          }
+          break;
+
+        case ScheduleCycle.month:
+        case ScheduleCycle.year:
+        case ScheduleCycle.once:
+        case ScheduleCycle.quarterMonthDay:
+        case ScheduleCycle.quarterDay:
+        case ScheduleCycle.monthAfterDay:
           if (daysUntil >= 0 && daysUntil <= 2) {
             shouldNotify = true;
             if (daysUntil == 2) {
@@ -350,18 +225,44 @@ Future<void> handleScheduledNotifications() async {
               notificationTitle = "今天";
             }
           }
-        }
-        break;
-    }
+          break;
 
-    if (shouldNotify) {
-      final int notificationId = task['id'];
-      final String taskComment = task['content'] ?? '您有一个计划待处理，点击查看详情。';
-      await notificationService.showScheduleNotification(
-        notificationId,
-        notificationTitle,
-        taskComment,
-      );
+        case ScheduleCycle.custom:
+          final int intervalDays =
+              int.tryParse(task['datesign']?.toString() ?? '') ?? 0;
+
+          if (intervalDays > 0 && intervalDays < 3) {
+            if (daysUntil == 0) {
+              shouldNotify = true;
+              notificationTitle = "今天";
+            }
+          } else {
+            if (daysUntil >= 0 && daysUntil <= 2) {
+              shouldNotify = true;
+              if (daysUntil == 2) {
+                notificationTitle = "后天";
+              } else if (daysUntil == 1) {
+                notificationTitle = "明天";
+              } else {
+                notificationTitle = "今天";
+              }
+            }
+          }
+          break;
+      }
+
+      if (shouldNotify) {
+        final int notificationId = task['id'];
+        final String taskComment = task['content'] ?? '您有一个计划待处理，点击查看详情。';
+        await notificationService.showScheduleNotification(
+          notificationId,
+          notificationTitle,
+          taskComment,
+        );
+      }
+    } catch (e) {
+      debugPrint('处理计划提醒失败，任务ID=${task['id']}，错误: $e');
+      continue;
     }
   }
 }

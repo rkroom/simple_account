@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../tools/config_enum.dart';
 import '../tools/entity.dart';
+import '../tools/schedule_rule_helper.dart';
 
 typedef OnSaveCallback =
     Future<bool> Function({
@@ -14,6 +15,13 @@ typedef OnSaveCallback =
       DateTime? expectDate,
       int? selectedDay,
       String? dateSign,
+
+      // 新增
+      int? quarterMonthOfQuarter,
+      int? quarterDayOfMonth,
+      int? quarterDayOfQuarter,
+      int? monthAfterAnchorDay,
+      int? monthAfterOffsetDays,
     });
 
 class ScheduleForm extends StatefulWidget {
@@ -50,9 +58,21 @@ class _ScheduleFormState extends State<ScheduleForm> {
   late TextEditingController _createDateController;
   late TextEditingController _expectDateController;
 
+  // 新增
+  late int? _quarterMonthOfQuarter;
+  late int? _quarterDayOfMonth;
+  late TextEditingController _quarterDayOfQuarterController;
+  late int? _monthAfterAnchorDay;
+  late TextEditingController _monthAfterOffsetController;
+
   bool _showRoundDays = false;
   bool _showExpectDate = false;
   bool _showCustomDays = false;
+
+  bool _showQuarterMonthDayFields = false;
+  bool _showQuarterDayFields = false;
+  bool _showMonthAfterDayFields = false;
+
   String _expectDateLabel = "预计日期";
   List<int> _daysOptions = [];
 
@@ -70,17 +90,70 @@ class _ScheduleFormState extends State<ScheduleForm> {
     _selectedRound = item?.cycleValue;
     _selectedDay = null;
     _expectDate = null;
+
+    _quarterMonthOfQuarter = null;
+    _quarterDayOfMonth = null;
+    _monthAfterAnchorDay = null;
+
     String initialDateSign = '';
+    String initialQuarterDayOfQuarter = '';
+    String initialMonthAfterOffset = '';
 
     if (item != null) {
-      _initializeFieldsFromItem(item, (day, date, dateSignValue) {
-        _selectedDay = day;
-        _expectDate = date;
-        initialDateSign = dateSignValue;
-      });
+      switch (item.cycleValue) {
+        case ScheduleCycle.week:
+        case ScheduleCycle.month:
+          if (item.dateSign.isNotEmpty) {
+            _selectedDay = int.tryParse(item.dateSign);
+          }
+          break;
+
+        case ScheduleCycle.custom:
+          initialDateSign = item.dateSign;
+          if (item.finalDate != null && item.finalDate!.isNotEmpty) {
+            _expectDate = DateTime.tryParse(item.finalDate!);
+          }
+          break;
+
+        case ScheduleCycle.year:
+        case ScheduleCycle.once:
+          if (item.finalDate != null && item.finalDate!.isNotEmpty) {
+            _expectDate = DateTime.tryParse(item.finalDate!);
+          }
+          break;
+
+        case ScheduleCycle.quarterMonthDay:
+          _quarterMonthOfQuarter = readRuleInt(
+            item.ruleParams,
+            'monthOfQuarter',
+          );
+          _quarterDayOfMonth = readRuleInt(item.ruleParams, 'dayOfMonth');
+          break;
+
+        case ScheduleCycle.quarterDay:
+          final qd = readRuleInt(item.ruleParams, 'dayOfQuarter');
+          initialQuarterDayOfQuarter = qd?.toString() ?? '';
+          break;
+
+        case ScheduleCycle.monthAfterDay:
+          _monthAfterAnchorDay = readRuleInt(item.ruleParams, 'anchorDay');
+          final od = readRuleInt(item.ruleParams, 'offsetDays');
+          initialMonthAfterOffset = od?.toString() ?? '';
+          break;
+
+        case ScheduleCycle.day:
+          break;
+      }
     }
 
     _dateSignController = TextEditingController(text: initialDateSign);
+    _quarterDayOfQuarterController = TextEditingController(
+      text: initialQuarterDayOfQuarter,
+    );
+    _monthAfterOffsetController = TextEditingController(
+      text: initialMonthAfterOffset,
+    );
+
     _createDateController = TextEditingController(
       text: DateFormat(_dateTimeFormat).format(_createDate),
     );
@@ -96,48 +169,14 @@ class _ScheduleFormState extends State<ScheduleForm> {
     }
   }
 
-  void _initializeFieldsFromItem(
-    ScheduleItem item,
-    Function(int?, DateTime?, String) callback,
-  ) {
-    int? day;
-    DateTime? date;
-    String dateSign = '';
-
-    switch (item.cycleValue) {
-      case ScheduleCycle.week:
-      case ScheduleCycle.month:
-        if (item.dateSign.isNotEmpty) {
-          day = int.tryParse(item.dateSign);
-        }
-        break;
-      case ScheduleCycle.custom:
-        dateSign = item.dateSign;
-        break;
-      default:
-        break;
-    }
-
-    switch (item.cycleValue) {
-      case ScheduleCycle.year:
-      case ScheduleCycle.once:
-      case ScheduleCycle.custom:
-        if (item.finalDate != null && item.finalDate!.isNotEmpty) {
-          date = DateTime.tryParse(item.finalDate!);
-        }
-        break;
-      default:
-        break;
-    }
-    callback(day, date, dateSign);
-  }
-
   @override
   void dispose() {
     _projectController.dispose();
     _dateSignController.dispose();
     _createDateController.dispose();
     _expectDateController.dispose();
+    _quarterDayOfQuarterController.dispose();
+    _monthAfterOffsetController.dispose();
     super.dispose();
   }
 
@@ -147,8 +186,15 @@ class _ScheduleFormState extends State<ScheduleForm> {
       _selectedRound = newValue;
       _selectedDay = null;
       _expectDate = null;
+      _quarterMonthOfQuarter = null;
+      _quarterDayOfMonth = null;
+      _monthAfterAnchorDay = null;
+
       _dateSignController.clear();
       _expectDateController.clear();
+      _quarterDayOfQuarterController.clear();
+      _monthAfterOffsetController.clear();
+
       _updateFormUI(newValue);
     });
   }
@@ -164,6 +210,10 @@ class _ScheduleFormState extends State<ScheduleForm> {
         cycle == ScheduleCycle.once ||
         cycle == ScheduleCycle.custom;
     _showCustomDays = cycle == ScheduleCycle.custom;
+
+    _showQuarterMonthDayFields = cycle == ScheduleCycle.quarterMonthDay;
+    _showQuarterDayFields = cycle == ScheduleCycle.quarterDay;
+    _showMonthAfterDayFields = cycle == ScheduleCycle.monthAfterDay;
 
     if (cycle == ScheduleCycle.week) {
       _daysOptions = List.generate(7, (i) => i + 1);
@@ -209,6 +259,11 @@ class _ScheduleFormState extends State<ScheduleForm> {
         expectDate: _expectDate,
         selectedDay: _selectedDay,
         dateSign: _dateSignController.text,
+        quarterMonthOfQuarter: _quarterMonthOfQuarter,
+        quarterDayOfMonth: _quarterDayOfMonth,
+        quarterDayOfQuarter: int.tryParse(_quarterDayOfQuarterController.text),
+        monthAfterAnchorDay: _monthAfterAnchorDay,
+        monthAfterOffsetDays: int.tryParse(_monthAfterOffsetController.text),
       );
 
       if (success && mounted) {
@@ -221,6 +276,8 @@ class _ScheduleFormState extends State<ScheduleForm> {
 
   @override
   Widget build(BuildContext context) {
+    final monthDays = List.generate(31, (i) => i + 1);
+
     return Scaffold(
       appBar: AppBar(title: Text(widget.appBarTitle)),
       body: Form(
@@ -256,6 +313,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
                       : null,
             ),
             const SizedBox(height: 16),
+
             DropdownButtonFormField<ScheduleCycle>(
               initialValue: _selectedRound,
               decoration: const InputDecoration(
@@ -274,6 +332,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
               validator: (value) => value == null ? '请选择一个周期' : null,
             ),
             const SizedBox(height: 16),
+
             if (_showRoundDays)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
@@ -295,6 +354,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
                   validator: (value) => value == null ? '请选择一个日期' : null,
                 ),
               ),
+
             if (_showExpectDate)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
@@ -325,6 +385,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
                           value == null || value.isEmpty ? '请选择一个日期' : null,
                 ),
               ),
+
             if (_showCustomDays)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
@@ -337,13 +398,120 @@ class _ScheduleFormState extends State<ScheduleForm> {
                   keyboardType: TextInputType.number,
                   validator: (value) {
                     if (value == null || value.isEmpty) return '请输入天数';
-                    if (int.tryParse(value) == null || int.parse(value) <= 0) {
+                    final intValue = int.tryParse(value);
+                    if (intValue == null || intValue <= 0) {
                       return '请输入一个有效的天数';
                     }
                     return null;
                   },
                 ),
               ),
+
+            if (_showQuarterMonthDayFields) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: DropdownButtonFormField<int>(
+                  initialValue: _quarterMonthOfQuarter,
+                  decoration: const InputDecoration(
+                    labelText: '季度内第几个月',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 1, child: Text('第1个月')),
+                    DropdownMenuItem(value: 2, child: Text('第2个月')),
+                    DropdownMenuItem(value: 3, child: Text('第3个月')),
+                  ],
+                  onChanged:
+                      (value) => setState(() => _quarterMonthOfQuarter = value),
+                  validator: (value) => value == null ? '请选择季度内月份' : null,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: DropdownButtonFormField<int>(
+                  initialValue: _quarterDayOfMonth,
+                  decoration: const InputDecoration(
+                    labelText: '该月第几号',
+                    border: OutlineInputBorder(),
+                  ),
+                  items:
+                      monthDays.map((day) {
+                        return DropdownMenuItem(
+                          value: day,
+                          child: Text(day.toString()),
+                        );
+                      }).toList(),
+                  onChanged:
+                      (value) => setState(() => _quarterDayOfMonth = value),
+                  validator: (value) => value == null ? '请选择日期' : null,
+                ),
+              ),
+            ],
+
+            if (_showQuarterDayFields)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: TextFormField(
+                  controller: _quarterDayOfQuarterController,
+                  decoration: const InputDecoration(
+                    labelText: '季度第几天',
+                    hintText: '请输入 1~92',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) return '请输入季度第几天';
+                    final v = int.tryParse(value);
+                    if (v == null || v <= 0 || v > 92) {
+                      return '请输入 1~92 的整数';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+
+            if (_showMonthAfterDayFields) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: DropdownButtonFormField<int>(
+                  initialValue: _monthAfterAnchorDay,
+                  decoration: const InputDecoration(
+                    labelText: '每月几号之后',
+                    border: OutlineInputBorder(),
+                  ),
+                  items:
+                      monthDays.map((day) {
+                        return DropdownMenuItem(
+                          value: day,
+                          child: Text(day.toString()),
+                        );
+                      }).toList(),
+                  onChanged:
+                      (value) => setState(() => _monthAfterAnchorDay = value),
+                  validator: (value) => value == null ? '请选择基准日期' : null,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: TextFormField(
+                  controller: _monthAfterOffsetController,
+                  decoration: const InputDecoration(
+                    labelText: '之后第几天',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) return '请输入天数';
+                    final v = int.tryParse(value);
+                    if (v == null || v <= 0) {
+                      return '请输入有效天数';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+            ],
+
             TextFormField(
               controller: _projectController,
               decoration: const InputDecoration(

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'config_enum.dart';
 
 class Config {
@@ -105,6 +107,9 @@ class ScheduleItem {
   final String dateSign;
   final String? finalDate;
 
+  // 新增：扩展周期参数
+  final Map<String, dynamic>? ruleParams;
+
   ScheduleItem({
     required this.id,
     required this.content,
@@ -116,25 +121,66 @@ class ScheduleItem {
     required this.status,
     required this.dateSign,
     this.finalDate,
+    this.ruleParams,
   });
 
   @override
   String toString() {
-    return 'ScheduleItem(id: $id, content: $content, date: $date, lastCompletedDate: $lastCompletedDate, finished: $finished, cycleValue: $cycleValue, created: $created, status: $status, dateSign: $dateSign,  finalDate: $finalDate)';
+    return 'ScheduleItem('
+        'id: $id, '
+        'content: $content, '
+        'date: $date, '
+        'lastCompletedDate: $lastCompletedDate, '
+        'finished: $finished, '
+        'cycleValue: $cycleValue, '
+        'created: $created, '
+        'status: $status, '
+        'dateSign: $dateSign, '
+        'finalDate: $finalDate, '
+        'ruleParams: $ruleParams'
+        ')';
+  }
+
+  static Map<String, dynamic>? _parseRuleParams(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+
+    final text = raw.toString().trim();
+    if (text.isEmpty) return null;
+
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry(key.toString(), value));
+      }
+    } catch (_) {}
+    return null;
   }
 
   factory ScheduleItem.fromMap(Map<String, dynamic> map) {
+    final String cycleRaw =
+        (map['rule_type'] ?? map['round'] ?? ScheduleCycle.once.name)
+            .toString();
+
+    final String createdValue =
+        (map['createdf'] ?? map['created'] ?? '').toString();
+
+    final String statusRaw =
+        (map['status'] ?? ScheduleStatus.continuing.name).toString();
+
     return ScheduleItem(
       id: map['id'],
-      content: map['content'],
-      date: map['date'],
-      lastCompletedDate: map['last_completed_date'],
-      finished: map['finished'],
-      cycleValue: ScheduleCycle.values.byName(map['round']),
-      created: map["createdf"],
-      status: ScheduleStatus.values.byName(map['status']),
-      dateSign: map['datesign'] ?? '',
-      finalDate: map['finaldate'],
+      content: map['content']?.toString() ?? '',
+      date: map['date']?.toString() ?? '',
+      lastCompletedDate: map['last_completed_date']?.toString(),
+      finished: map['finished']?.toString(),
+      cycleValue: ScheduleCycle.fromString(cycleRaw),
+      created: createdValue,
+      status: ScheduleStatus.fromString(statusRaw),
+      dateSign: map['datesign']?.toString() ?? '',
+      finalDate: map['finaldate']?.toString(),
+      ruleParams: _parseRuleParams(map['rule_params']),
     );
   }
 }
