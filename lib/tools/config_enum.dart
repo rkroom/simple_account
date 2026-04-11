@@ -44,7 +44,7 @@ enum ScheduleCycle {
 
 enum ScheduleStatus {
   continuing('进行中', 'continuing'),
-  finished('已完成', 'finshed'),
+  finished('已完成', 'finished'),
   giveup('已放弃', 'giveup');
 
   const ScheduleStatus(this.label, this.dbValue);
@@ -52,9 +52,31 @@ enum ScheduleStatus {
   final String dbValue;
 
   static ScheduleStatus fromString(String dbValue) {
+    if (dbValue == 'finshed') {
+      return ScheduleStatus.finished;
+    }
+
     return ScheduleStatus.values.firstWhere(
       (e) => e.dbValue == dbValue,
       orElse: () => ScheduleStatus.continuing,
+    );
+  }
+}
+
+enum CustomIntervalUnit {
+  day('天'),
+  week('周'),
+  month('月'),
+  quarter('季度'),
+  year('年');
+
+  final String label;
+  const CustomIntervalUnit(this.label);
+
+  static CustomIntervalUnit fromString(String? value) {
+    return CustomIntervalUnit.values.firstWhere(
+      (e) => e.name == value,
+      orElse: () => CustomIntervalUnit.day,
     );
   }
 }

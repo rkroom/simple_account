@@ -20,15 +20,15 @@ class EditScheduleWidget extends StatelessWidget {
     required String content,
     DateTime? expectDate,
     int? selectedDay,
-    String? dateSign,
     DateTime? createDate,
-
-    // 新增参数，要和 ScheduleForm 的 OnSaveCallback 保持一致
     int? quarterMonthOfQuarter,
     int? quarterDayOfMonth,
     int? quarterDayOfQuarter,
     int? monthAfterAnchorDay,
     int? monthAfterOffsetDays,
+    int? customInterval,
+    CustomIntervalUnit? customUnit,
+    int? customOffsetDays,
   }) async {
     try {
       final Map<String, dynamic> updates = {
@@ -60,11 +60,28 @@ class EditScheduleWidget extends StatelessWidget {
           break;
 
         case ScheduleCycle.custom:
-          if (expectDate == null || dateSign == null || dateSign.isEmpty) {
-            throw '请填写起始日期和天数';
+          if (expectDate == null) {
+            throw '请选择起始日期';
           }
+          if (customInterval == null || customInterval <= 0) {
+            throw '请填写有效的间隔值';
+          }
+          if (customUnit == null) {
+            throw '请选择周期单位';
+          }
+
+          final offset = customOffsetDays ?? 0;
+          if (offset < 0) {
+            throw '偏移天数不能小于 0';
+          }
+
           updates['finaldate'] = DateFormat('yyyy-MM-dd').format(expectDate);
-          updates['datesign'] = dateSign;
+          updates['datesign'] = null;
+          updates['rule_params'] = jsonEncode({
+            'interval': customInterval,
+            'unit': customUnit.name,
+            'offsetDays': offset,
+          });
           break;
 
         case ScheduleCycle.day:
@@ -92,8 +109,8 @@ class EditScheduleWidget extends StatelessWidget {
         case ScheduleCycle.monthAfterDay:
           if (monthAfterAnchorDay == null ||
               monthAfterOffsetDays == null ||
-              monthAfterOffsetDays <= 0) {
-            throw '请填写每月几号之后和之后第几天';
+              monthAfterOffsetDays < 0) {
+            throw '请填写有效的每月规则';
           }
           updates['rule_params'] = jsonEncode({
             'anchorDay': monthAfterAnchorDay,

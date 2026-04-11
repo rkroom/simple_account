@@ -31,9 +31,21 @@ int? readRuleInt(Map<String, dynamic>? params, String key) {
   return int.tryParse(value.toString());
 }
 
+String? readRuleString(Map<String, dynamic>? params, String key) {
+  if (params == null) return null;
+  final value = params[key];
+  if (value == null) return null;
+  final text = value.toString().trim();
+  return text.isEmpty ? null : text;
+}
+
 DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
 DateTime normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
+
+bool _sameDate(DateTime a, DateTime b) {
+  return a.year == b.year && a.month == b.month && a.day == b.day;
+}
 
 DateTime _safeDate(int year, int month, int day) {
   final lastDay = DateTime(year, month + 1, 0).day;
@@ -41,21 +53,22 @@ DateTime _safeDate(int year, int month, int day) {
   return DateTime(year, month, targetDay);
 }
 
-DateTime _subtractMonths(DateTime from, int months) {
-  int targetYear = from.year;
-  int targetMonth = from.month - months;
+DateTime _addMonths(DateTime from, int months) {
+  final totalMonths = from.year * 12 + (from.month - 1) + months;
+  int year = totalMonths ~/ 12;
+  int month = totalMonths % 12 + 1;
 
-  while (targetMonth <= 0) {
-    targetMonth += 12;
-    targetYear -= 1;
+  if (month <= 0) {
+    month += 12;
+    year -= 1;
   }
 
-  final lastDayOfTargetMonth = DateTime(targetYear, targetMonth + 1, 0).day;
-  final day = from.day > lastDayOfTargetMonth ? lastDayOfTargetMonth : from.day;
+  final lastDay = DateTime(year, month + 1, 0).day;
+  final day = from.day > lastDay ? lastDay : from.day;
 
   return DateTime(
-    targetYear,
-    targetMonth,
+    year,
+    month,
     day,
     from.hour,
     from.minute,
@@ -63,6 +76,25 @@ DateTime _subtractMonths(DateTime from, int months) {
     from.millisecond,
     from.microsecond,
   );
+}
+
+DateTime _addYears(DateTime from, int years) {
+  return _safeDate(from.year + years, from.month, from.day);
+}
+
+DateTime _addByCustomUnit(DateTime from, CustomIntervalUnit unit, int amount) {
+  switch (unit) {
+    case CustomIntervalUnit.day:
+      return normalizeDate(from.add(Duration(days: amount)));
+    case CustomIntervalUnit.week:
+      return normalizeDate(from.add(Duration(days: amount * 7)));
+    case CustomIntervalUnit.month:
+      return normalizeDate(_addMonths(from, amount));
+    case CustomIntervalUnit.quarter:
+      return normalizeDate(_addMonths(from, amount * 3));
+    case CustomIntervalUnit.year:
+      return normalizeDate(_addYears(from, amount));
+  }
 }
 
 DateTime _nextQuarterMonthDay(
@@ -133,6 +165,77 @@ DateTime _nextMonthAfterDay(DateTime now, int anchorDay, int offsetDays) {
   throw StateError('无法计算每月自定义任务日期');
 }
 
+class _CustomRule {
+  final DateTime startDate;
+  final int interval;
+  final CustomIntervalUnit unit;
+  final int offsetDays;
+
+  const _CustomRule({
+    required this.startDate,
+    required this.interval,
+    required this.unit,
+    required this.offsetDays,
+  });
+}
+
+_CustomRule _readCustomRule({
+  required String? finalDateValue,
+  required String? legacyDateSign,
+  required Map<String, dynamic>? ruleParams,
+}) {
+  if (finalDateValue == null || finalDateValue.isEmpty) {
+    throw const FormatException('custom 类型缺少起始日期');
+  }
+
+  final startDate = normalizeDate(DateTime.parse(finalDateValue));
+
+  final interval = readRuleInt(ruleParams, 'interval');
+  final unitStr = readRuleString(ruleParams, 'unit');
+  final offsetDays = readRuleInt(ruleParams, 'offsetDays') ?? 0;
+
+  if (interval != null && interval > 0) {
+    return _CustomRule(
+      startDate: startDate,
+      interval: interval,
+      unit: CustomIntervalUnit.fromString(unitStr),
+      offsetDays: offsetDays < 0 ? 0 : offsetDays,
+    );
+  }
+
+  // 兼容旧数据：custom = 起始日期 + 每 N 天
+  final legacyInterval = int.tryParse(legacyDateSign ?? '');
+  if (legacyInterval != null && legacyInterval > 0) {
+    return _CustomRule(
+      startDate: startDate,
+      interval: legacyInterval,
+      unit: CustomIntervalUnit.day,
+      offsetDays: 0,
+    );
+  }
+
+  throw const FormatException('custom 类型缺少有效 interval');
+}
+
+DateTime _customDueAtStep(_CustomRule rule, int step) {
+  final anchor = _addByCustomUnit(
+    rule.startDate,
+    rule.unit,
+    rule.interval * step,
+  );
+  return normalizeDate(anchor.add(Duration(days: rule.offsetDays)));
+}
+
+DateTime _nextCustomDueDate(DateTime today, _CustomRule rule) {
+  for (int step = 0; step < 5000; step++) {
+    final candidate = _customDueAtStep(rule, step);
+    if (!candidate.isBefore(today)) {
+      return candidate;
+    }
+  }
+  throw StateError('无法计算下一次 custom 任务日期');
+}
+
 String calcNextScheduleDate({
   required DateTime now,
   required ScheduleCycle cycle,
@@ -191,26 +294,12 @@ String calcNextScheduleDate({
       throw const FormatException('once 类型缺少日期');
 
     case ScheduleCycle.custom:
-      if (finalDateValue == null || finalDateValue.isEmpty) {
-        throw const FormatException('custom 类型缺少起始日期');
-      }
-      final startDate = normalizeDate(DateTime.parse(finalDateValue));
-      final intervalDays = int.tryParse(dateSign ?? '');
-      if (intervalDays == null || intervalDays <= 0) {
-        throw const FormatException('custom 类型缺少有效的间隔天数');
-      }
-
-      if (startDate.isAfter(today)) {
-        return formatter.format(startDate);
-      }
-
-      final diff = today.difference(startDate).inDays;
-      final passed = diff ~/ intervalDays;
-      DateTime candidate = startDate.add(Duration(days: passed * intervalDays));
-      if (candidate.isBefore(today)) {
-        candidate = candidate.add(Duration(days: intervalDays));
-      }
-      return formatter.format(candidate);
+      final rule = _readCustomRule(
+        finalDateValue: finalDateValue,
+        legacyDateSign: dateSign,
+        ruleParams: ruleParams,
+      );
+      return formatter.format(_nextCustomDueDate(today, rule));
 
     case ScheduleCycle.quarterMonthDay:
       final monthOfQuarter = readRuleInt(ruleParams, 'monthOfQuarter');
@@ -239,11 +328,119 @@ String calcNextScheduleDate({
       if (anchorDay == null ||
           anchorDay < 1 ||
           offsetDays == null ||
-          offsetDays < 1) {
+          offsetDays < 0) {
         throw const FormatException('monthAfterDay 参数无效');
       }
       return formatter.format(_nextMonthAfterDay(today, anchorDay, offsetDays));
   }
+}
+
+List<DateTime> getScheduleDatesInRange({
+  required ScheduleItem item,
+  required DateTime rangeStart,
+  required DateTime rangeEnd,
+}) {
+  final DateTime start = normalizeDate(rangeStart);
+  final DateTime end = normalizeDate(rangeEnd);
+
+  if (start.isAfter(end)) return [];
+
+  final List<DateTime> result = [];
+
+  // once 单独处理，避免旧日期导致游标回退
+  if (item.cycleValue == ScheduleCycle.once) {
+    try {
+      final String dueDateText = calcNextScheduleDate(
+        now: start,
+        cycle: item.cycleValue,
+        dateSign: item.dateSign,
+        finalDateValue: item.finalDate,
+        ruleParams: item.ruleParams,
+      );
+      final DateTime dueDate = normalizeDate(DateTime.parse(dueDateText));
+      if (!dueDate.isBefore(start) && !dueDate.isAfter(end)) {
+        result.add(dueDate);
+      }
+    } catch (_) {}
+    return result;
+  }
+
+  DateTime cursor = start;
+  int guard = 0;
+
+  while (!cursor.isAfter(end) && guard < 2000) {
+    guard++;
+
+    try {
+      final String nextDateText = calcNextScheduleDate(
+        now: cursor,
+        cycle: item.cycleValue,
+        dateSign: item.dateSign,
+        finalDateValue: item.finalDate,
+        ruleParams: item.ruleParams,
+      );
+
+      final DateTime nextDate = normalizeDate(DateTime.parse(nextDateText));
+
+      if (nextDate.isAfter(end)) {
+        break;
+      }
+
+      // 防御性处理，避免异常规则导致死循环
+      if (nextDate.isBefore(cursor)) {
+        cursor = cursor.add(const Duration(days: 1));
+        continue;
+      }
+
+      result.add(nextDate);
+      cursor = nextDate.add(const Duration(days: 1));
+    } catch (_) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+String _customUnitText(CustomIntervalUnit unit) {
+  switch (unit) {
+    case CustomIntervalUnit.day:
+      return '天';
+    case CustomIntervalUnit.week:
+      return '周';
+    case CustomIntervalUnit.month:
+      return '个月';
+    case CustomIntervalUnit.quarter:
+      return '个季度';
+    case CustomIntervalUnit.year:
+      return '年';
+  }
+}
+
+String _formatCustomRuleText({
+  required int interval,
+  required CustomIntervalUnit unit,
+  required int offsetDays,
+}) {
+  if (offsetDays <= 0) {
+    if (interval == 1) {
+      switch (unit) {
+        case CustomIntervalUnit.day:
+          return '每天';
+        case CustomIntervalUnit.week:
+          return '每周';
+        case CustomIntervalUnit.month:
+          return '每月';
+        case CustomIntervalUnit.quarter:
+          return '每季度';
+        case CustomIntervalUnit.year:
+          return '每年';
+      }
+    }
+    return '每$interval${_customUnitText(unit)}';
+  }
+
+  return '每$interval${_customUnitText(unit)}后$offsetDays日';
 }
 
 String formatScheduleCycle(ScheduleItem item) {
@@ -273,6 +470,19 @@ String formatScheduleCycle(ScheduleItem item) {
       }
       return '每年';
     case ScheduleCycle.custom:
+      final interval = readRuleInt(item.ruleParams, 'interval');
+      final unitStr = readRuleString(item.ruleParams, 'unit');
+      final offsetDays = readRuleInt(item.ruleParams, 'offsetDays') ?? 0;
+
+      if (interval != null && interval > 0) {
+        return _formatCustomRuleText(
+          interval: interval,
+          unit: CustomIntervalUnit.fromString(unitStr),
+          offsetDays: offsetDays,
+        );
+      }
+
+      // 兼容旧数据
       return '每${item.dateSign}天';
     case ScheduleCycle.once:
       return '';
@@ -286,7 +496,16 @@ String formatScheduleCycle(ScheduleItem item) {
     case ScheduleCycle.monthAfterDay:
       final anchorDay = readRuleInt(item.ruleParams, 'anchorDay');
       final offsetDays = readRuleInt(item.ruleParams, 'offsetDays');
-      return '每月${anchorDay ?? '?'}日之后第${offsetDays ?? '?'}天';
+
+      if (anchorDay == null || offsetDays == null) {
+        return '每月?日之后第?天';
+      }
+
+      if (offsetDays == 0) {
+        return '每月$anchorDay日';
+      }
+
+      return '每月$anchorDay日后$offsetDays天';
   }
 }
 
@@ -307,15 +526,50 @@ DateTime? getPreviousDueDateForItem(
       return normalizedCurrent.subtract(const Duration(days: 7));
 
     case ScheduleCycle.custom:
-      final days = int.tryParse(item.dateSign);
-      if (days == null || days <= 0) return null;
-      return normalizedCurrent.subtract(Duration(days: days));
+      try {
+        final rule = _readCustomRule(
+          finalDateValue: item.finalDate,
+          legacyDateSign: item.dateSign,
+          ruleParams: item.ruleParams,
+        );
+
+        DateTime? previous;
+        for (int step = 0; step < 5000; step++) {
+          final candidate = _customDueAtStep(rule, step);
+
+          if (_sameDate(candidate, normalizedCurrent)) {
+            return previous;
+          }
+          if (candidate.isAfter(normalizedCurrent)) {
+            return previous;
+          }
+          previous = candidate;
+        }
+        return previous;
+      } catch (_) {
+        return null;
+      }
 
     case ScheduleCycle.month:
-      return _subtractMonths(normalizedCurrent, 1);
+      final targetDay = int.tryParse(item.dateSign);
+      if (targetDay == null || targetDay < 1) return null;
+
+      final prevMonthBase = DateTime(
+        normalizedCurrent.year,
+        normalizedCurrent.month - 1,
+        1,
+      );
+      return _safeDate(prevMonthBase.year, prevMonthBase.month, targetDay);
 
     case ScheduleCycle.year:
-      return _subtractMonths(normalizedCurrent, 12);
+      if (item.finalDate == null || item.finalDate!.isEmpty) return null;
+
+      try {
+        final parsed = DateTime.parse(item.finalDate!);
+        return _safeDate(normalizedCurrent.year - 1, parsed.month, parsed.day);
+      } catch (_) {
+        return null;
+      }
 
     case ScheduleCycle.quarterMonthDay:
       final monthOfQuarter = readRuleInt(item.ruleParams, 'monthOfQuarter');

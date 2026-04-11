@@ -173,13 +173,14 @@ class ScheduleItem {
       id: map['id'],
       content: map['content']?.toString() ?? '',
       date: map['date']?.toString() ?? '',
-      lastCompletedDate: map['last_completed_date']?.toString(),
-      finished: map['finished']?.toString(),
+      lastCompletedDate:
+          (map['last_completed_date'] ?? map['handledate'])?.toString(),
+      finished: (map['finishedf'] ?? map['finished'])?.toString(),
       cycleValue: ScheduleCycle.fromString(cycleRaw),
       created: createdValue,
       status: ScheduleStatus.fromString(statusRaw),
       dateSign: map['datesign']?.toString() ?? '',
-      finalDate: map['finaldate']?.toString(),
+      finalDate: (map['finaldatef'] ?? map['finaldate'])?.toString(),
       ruleParams: _parseRuleParams(map['rule_params']),
     );
   }

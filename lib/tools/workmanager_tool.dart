@@ -9,6 +9,8 @@ import 'notification_service.dart';
 import 'tools.dart';
 import 'db.dart';
 import 'schedule_rule_helper.dart';
+import 'schedule_notification_helper.dart';
+import 'entity.dart';
 
 class WorkmanagerTasks {
   // 每日统计任务
@@ -161,11 +163,11 @@ Future<void> handleScheduledNotifications() async {
   final List tasks = await DB().getContinuingSchedules();
   final notificationService = NotificationService();
 
-  for (var task in tasks) {
+  for (final task in tasks) {
     try {
       final String cycleRaw =
           (task['rule_type'] ?? task['round'] ?? '').toString();
-      final ScheduleCycle round = ScheduleCycle.fromString(cycleRaw);
+      final ScheduleCycle cycle = ScheduleCycle.fromString(cycleRaw);
 
       final Map<String, dynamic>? ruleParams = parseRuleParams(
         task['rule_params'],
@@ -176,93 +178,103 @@ Future<void> handleScheduledNotifications() async {
 
       final String targetDateStr = calcNextScheduleDate(
         now: today,
-        cycle: round,
+        cycle: cycle,
         dateSign: task['datesign']?.toString(),
         finalDateValue: finalDateValue,
         ruleParams: ruleParams,
       );
 
       final DateTime targetDate = normalizeDate(DateTime.parse(targetDateStr));
-      if (targetDate.isBefore(today)) {
+      final int daysUntil = targetDate.difference(today).inDays;
+
+      // 已经在当前周期完成过，就不再提醒
+      final bool alreadyCompleted = _isCompletedInCurrentCycle(
+        cycle: cycle,
+        currentDueDateStr: targetDateStr,
+        lastHandledDateStr: task['handledate']?.toString(),
+        createdStr: (task['createdf'] ?? task['created'] ?? '').toString(),
+        dateSign: task['datesign']?.toString(),
+        finalDateValue: finalDateValue,
+        ruleParams: ruleParams,
+      );
+
+      if (alreadyCompleted) {
         continue;
       }
 
-      final int daysUntil = targetDate.difference(today).inDays;
-      bool shouldNotify = false;
-      String notificationTitle = "提醒";
+      final decision = decideScheduleNotification(
+        cycle: cycle,
+        daysUntil: daysUntil,
+        ruleParams: ruleParams,
+        legacyDateSign: task['datesign']?.toString(),
+      );
 
-      switch (round) {
-        case ScheduleCycle.day:
-          if (daysUntil == 0) {
-            shouldNotify = true;
-            notificationTitle = "今天";
-          }
-          break;
-
-        case ScheduleCycle.week:
-          if (daysUntil == 1) {
-            shouldNotify = true;
-            notificationTitle = "明天";
-          } else if (daysUntil == 0) {
-            shouldNotify = true;
-            notificationTitle = "今天";
-          }
-          break;
-
-        case ScheduleCycle.month:
-        case ScheduleCycle.year:
-        case ScheduleCycle.once:
-        case ScheduleCycle.quarterMonthDay:
-        case ScheduleCycle.quarterDay:
-        case ScheduleCycle.monthAfterDay:
-          if (daysUntil >= 0 && daysUntil <= 2) {
-            shouldNotify = true;
-            if (daysUntil == 2) {
-              notificationTitle = "后天";
-            } else if (daysUntil == 1) {
-              notificationTitle = "明天";
-            } else {
-              notificationTitle = "今天";
-            }
-          }
-          break;
-
-        case ScheduleCycle.custom:
-          final int intervalDays =
-              int.tryParse(task['datesign']?.toString() ?? '') ?? 0;
-
-          if (intervalDays > 0 && intervalDays < 3) {
-            if (daysUntil == 0) {
-              shouldNotify = true;
-              notificationTitle = "今天";
-            }
-          } else {
-            if (daysUntil >= 0 && daysUntil <= 2) {
-              shouldNotify = true;
-              if (daysUntil == 2) {
-                notificationTitle = "后天";
-              } else if (daysUntil == 1) {
-                notificationTitle = "明天";
-              } else {
-                notificationTitle = "今天";
-              }
-            }
-          }
-          break;
+      if (!decision.shouldNotify) {
+        continue;
       }
 
-      if (shouldNotify) {
-        final int notificationId = task['id'];
-        final String taskComment = task['content'] ?? '您有一个计划待处理，点击查看详情。';
-        await notificationService.showScheduleNotification(
-          notificationId,
-          notificationTitle,
-          taskComment,
-        );
-      }
+      final int notificationId = task['id'];
+      final String taskComment =
+          task['content']?.toString() ?? '您有一个计划待处理，点击查看详情。';
+
+      await notificationService.showScheduleNotification(
+        notificationId,
+        decision.title,
+        taskComment,
+      );
     } catch (e) {
       debugPrint('处理计划提醒失败，任务ID=${task['id']}，错误: $e');
       continue;
     }
   }
+}
+
+bool _isCompletedInCurrentCycle({
+  required ScheduleCycle cycle,
+  required String currentDueDateStr,
+  required String? lastHandledDateStr,
+  required String createdStr,
+  required String? dateSign,
+  required String? finalDateValue,
+  Map<String, dynamic>? ruleParams,
+}) {
+  final DateTime? lastHandled = DateTime.tryParse(lastHandledDateStr ?? '');
+  if (lastHandled == null) return false;
+
+  final DateTime dueDate = normalizeDate(DateTime.parse(currentDueDateStr));
+  final DateTime handledDate = normalizeDate(lastHandled);
+
+  // 一次性任务：只要已经处理过且处理日期不晚于本次到期日，就视为已完成
+  if (cycle == ScheduleCycle.once) {
+    return !handledDate.isAfter(dueDate);
+  }
+
+  final tempItem = ScheduleItem(
+    id: 0,
+    content: '',
+    date: currentDueDateStr,
+    lastCompletedDate: lastHandledDateStr,
+    finished: null,
+    cycleValue: cycle,
+    created: createdStr,
+    status: ScheduleStatus.continuing,
+    dateSign: dateSign ?? '',
+    finalDate: finalDateValue,
+    ruleParams: ruleParams,
+  );
+
+  final DateTime? previousDueDate = getPreviousDueDateForItem(
+    tempItem,
+    dueDate,
+  );
+
+  if (previousDueDate == null) {
+    return !handledDate.isAfter(dueDate);
+  }
+
+  final DateTime prev = normalizeDate(previousDueDate);
+
+  // 只要“最后完成日期”落在 (上次应执行日, 本次应执行日] 内，
+  // 就说明本周期已经完成，不应再提醒
+  return handledDate.isAfter(prev) && !handledDate.isAfter(dueDate);
 }

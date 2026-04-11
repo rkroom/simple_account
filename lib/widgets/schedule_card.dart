@@ -1,36 +1,79 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
-import 'package:table_calendar/table_calendar.dart';
+import 'package:intl/intl.dart';
+import 'package:table_calendar/table_calendar.dart' hide normalizeDate;
+
 import '../tools/config_enum.dart';
 import '../tools/db.dart';
 import '../tools/entity.dart';
 import '../tools/schedule_rule_helper.dart';
-import 'edit_schedule.dart';
 import '../tools/tools.dart';
+import 'edit_schedule.dart';
 
 class ScheduleCard extends StatelessWidget {
   final ScheduleItem item;
   final VoidCallback onDataRefreshed;
 
+  /// false: 列表模式，item.date 表示“下次”
+  /// true: 日历模式，item.date 表示“本次”
+  final bool isCalendarOccurrence;
+
   const ScheduleCard({
     super.key,
     required this.item,
     required this.onDataRefreshed,
+    this.isCalendarOccurrence = false,
   });
 
-  String _formatDate(String dateTimeString) {
-    final dt = DateTime.parse(dateTimeString);
+  String _formatDate(String? dateTimeString) {
+    if (dateTimeString == null || dateTimeString.trim().isEmpty) return '';
+    final dt = DateTime.tryParse(dateTimeString);
+    if (dt == null) return dateTimeString;
     return DateFormat('yyyy-MM-dd').format(dt);
   }
 
+  String? _getNextExecutionDateText() {
+    if (item.status != ScheduleStatus.continuing) {
+      return null;
+    }
+
+    if (!isCalendarOccurrence) {
+      return item.date;
+    }
+
+    if (item.cycleValue == ScheduleCycle.once) {
+      return '无';
+    }
+
+    final currentOccurrence = DateTime.tryParse(item.date);
+    if (currentOccurrence == null) {
+      return item.date;
+    }
+
+    try {
+      final seed = normalizeDate(
+        currentOccurrence.add(const Duration(days: 1)),
+      );
+
+      return calcNextScheduleDate(
+        now: seed,
+        cycle: item.cycleValue,
+        dateSign: item.dateSign,
+        finalDateValue: item.finalDate,
+        ruleParams: item.ruleParams,
+      );
+    } catch (_) {
+      return item.date;
+    }
+  }
+
   Future<bool?> _showEditHandleDialog(
-    BuildContext context,
+    BuildContext pageContext,
     Map<String, dynamic> record,
   ) {
     final int recordId = record['id'];
-    final String initialDateStr = record['handledate'] ?? '';
-    final String initialComment = record['comment'] ?? '';
+    final String initialDateStr = record['handledate']?.toString() ?? '';
+    final String initialComment = record['comment']?.toString() ?? '';
     final formatter = DateFormat('yyyy-MM-dd');
 
     DateTime selectedDate = DateTime.tryParse(initialDateStr) ?? DateTime.now();
@@ -40,7 +83,7 @@ class ScheduleCard extends StatelessWidget {
     final commentController = TextEditingController(text: initialComment);
 
     return showDialog<bool>(
-      context: context,
+      context: pageContext,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
@@ -57,7 +100,7 @@ class ScheduleCard extends StatelessWidget {
                 readOnly: true,
                 onTap: () {
                   DatePicker.showDatePicker(
-                    context,
+                    pageContext,
                     showTitleActions: true,
                     onConfirm: (date) {
                       selectedDate = date;
@@ -89,20 +132,20 @@ class ScheduleCard extends StatelessWidget {
               onPressed: () async {
                 final String newDate = dateController.text;
                 final String newComment = commentController.text;
-                Navigator.of(dialogContext);
+
                 try {
                   await DB().updateScheduleRecord(
                     recordId,
                     newDate,
                     newComment,
                   );
-                  if (context.mounted) {
+                  if (pageContext.mounted) {
                     Navigator.of(dialogContext).pop(true);
-                    showNoticeSnackBar(context, '记录更新成功!');
+                    showNoticeSnackBar(pageContext, '记录更新成功!');
                   }
                 } catch (e) {
-                  if (context.mounted) {
-                    showNoticeSnackBar(context, '更新失败: $e');
+                  if (pageContext.mounted) {
+                    showNoticeSnackBar(pageContext, '更新失败: $e');
                   }
                 }
               },
@@ -113,13 +156,20 @@ class ScheduleCard extends StatelessWidget {
     );
   }
 
-  void _showDetailsDialog(BuildContext context) {
+  void _showDetailsDialog(BuildContext pageContext) {
     final cycleText = formatScheduleCycle(item);
+    Future<dynamic> historyFuture = DB().getHandleInfo(item.id);
+
+    void refreshHistory(StateSetter dialogSetState) {
+      historyFuture = DB().getHandleInfo(item.id);
+      dialogSetState(() {});
+    }
+
     showDialog(
-      context: context,
+      context: pageContext,
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
-          builder: (BuildContext context, StateSetter dialogSetState) {
+          builder: (BuildContext _, StateSetter dialogSetState) {
             return AlertDialog(
               title: Text(item.content),
               content: SingleChildScrollView(
@@ -139,7 +189,7 @@ class ScheduleCard extends StatelessWidget {
                         InkWell(
                           onTap: () {
                             Navigator.of(dialogContext).pop();
-                            _showStatusUpdateDialog(context);
+                            _showStatusUpdateDialog(pageContext);
                           },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 2.0),
@@ -148,7 +198,7 @@ class ScheduleCard extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
-                                color: Theme.of(context).primaryColor,
+                                color: Theme.of(pageContext).primaryColor,
                                 decoration: TextDecoration.underline,
                               ),
                             ),
@@ -165,7 +215,7 @@ class ScheduleCard extends StatelessWidget {
                       ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: const Icon(Icons.info_outline, size: 20),
-                        title: Text('结束于: ${item.finished}'),
+                        title: Text('结束于: ${_formatDate(item.finished)}'),
                       ),
                     if (cycleText.isNotEmpty)
                       ListTile(
@@ -173,10 +223,10 @@ class ScheduleCard extends StatelessWidget {
                         leading: const Icon(Icons.repeat_rounded, size: 20),
                         title: Text('周期: $cycleText'),
                       ),
-                    _buildMissedTaskWarning(),
-                    FutureBuilder(
-                      future: DB().getHandleInfo(item.id),
-                      builder: (context, AsyncSnapshot<dynamic> snapshot) {
+                    _buildMissedTaskWarning(historyFuture),
+                    FutureBuilder<dynamic>(
+                      future: historyFuture,
+                      builder: (context, snapshot) {
                         if (snapshot.connectionState ==
                             ConnectionState.waiting) {
                           return const Center(
@@ -188,9 +238,10 @@ class ScheduleCard extends StatelessWidget {
                             child: Text('读取历史记录出错: ${snapshot.error}'),
                           );
                         }
+
                         final history = snapshot.data as List?;
                         final handledDates =
-                            (history)
+                            history
                                 ?.map(
                                   (e) => DateTime.tryParse(
                                     e['handledate']?.toString() ?? '',
@@ -202,6 +253,7 @@ class ScheduleCard extends StatelessWidget {
                                 )
                                 .toSet() ??
                             {};
+
                         final nextDate = DateTime.tryParse(item.date);
                         final normalizedNextDate =
                             nextDate != null
@@ -211,11 +263,13 @@ class ScheduleCard extends StatelessWidget {
                                   nextDate.day,
                                 )
                                 : null;
+
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (item.cycleValue == ScheduleCycle.day ||
-                                item.cycleValue == ScheduleCycle.week)
+                            if (item.status == ScheduleStatus.continuing &&
+                                (item.cycleValue == ScheduleCycle.day ||
+                                    item.cycleValue == ScheduleCycle.week))
                               Padding(
                                 padding: const EdgeInsets.only(
                                   top: 8.0,
@@ -260,6 +314,7 @@ class ScheduleCard extends StatelessWidget {
                                         day.month,
                                         day.day,
                                       );
+
                                       if (handledDates.contains(
                                         normalizedDay,
                                       )) {
@@ -278,6 +333,7 @@ class ScheduleCard extends StatelessWidget {
                                           ),
                                         );
                                       }
+
                                       if (normalizedDay == normalizedNextDate) {
                                         return Container(
                                           margin: const EdgeInsets.all(3.0),
@@ -294,6 +350,7 @@ class ScheduleCard extends StatelessWidget {
                                           ),
                                         );
                                       }
+
                                       return null;
                                     },
                                     todayBuilder: (context, day, focusedDay) {
@@ -302,6 +359,7 @@ class ScheduleCard extends StatelessWidget {
                                         day.month,
                                         day.day,
                                       );
+
                                       Color? bgColor;
                                       if (handledDates.contains(
                                         normalizedDay,
@@ -322,7 +380,7 @@ class ScheduleCard extends StatelessWidget {
                                             border: Border.all(
                                               color:
                                                   Theme.of(
-                                                    context,
+                                                    pageContext,
                                                   ).primaryColor,
                                               width: 2,
                                             ),
@@ -344,6 +402,7 @@ class ScheduleCard extends StatelessWidget {
                                         day.month,
                                         day.day,
                                       );
+
                                       Color? bgColor;
                                       if (handledDates.contains(
                                         normalizedDay,
@@ -409,7 +468,7 @@ class ScheduleCard extends StatelessWidget {
                                         ),
                                         child: ListTile(
                                           title: Text(
-                                            '日期: ${record['handledate']}',
+                                            '日期: ${_formatDate(record['handledate']?.toString())}',
                                           ),
                                           subtitle:
                                               hasComment
@@ -418,7 +477,7 @@ class ScheduleCard extends StatelessWidget {
                                           onLongPress: () async {
                                             final String? action =
                                                 await showDialog<String>(
-                                                  context: context,
+                                                  context: dialogContext,
                                                   builder: (
                                                     BuildContext menuContext,
                                                   ) {
@@ -454,15 +513,17 @@ class ScheduleCard extends StatelessWidget {
                                                     );
                                                   },
                                                 );
-                                            if (!context.mounted) return;
+
+                                            if (!pageContext.mounted) return;
+
                                             if (action == 'edit') {
                                               final bool? updated =
                                                   await _showEditHandleDialog(
-                                                    context,
+                                                    pageContext,
                                                     record,
                                                   );
                                               if (updated == true) {
-                                                dialogSetState(() {});
+                                                refreshHistory(dialogSetState);
                                                 onDataRefreshed();
                                               }
                                             } else if (action == 'delete') {
@@ -470,7 +531,7 @@ class ScheduleCard extends StatelessWidget {
                                               confirmDelete = await showDialog<
                                                 bool
                                               >(
-                                                context: context,
+                                                context: dialogContext,
                                                 builder: (
                                                   BuildContext confirmCtx,
                                                 ) {
@@ -503,24 +564,27 @@ class ScheduleCard extends StatelessWidget {
                                                   );
                                                 },
                                               );
+
                                               if (confirmDelete == true) {
                                                 try {
                                                   await DB()
                                                       .deleteScheduleRecord(
                                                         recordId,
                                                       );
-                                                  if (context.mounted) {
+                                                  if (pageContext.mounted) {
                                                     showNoticeSnackBar(
-                                                      context,
+                                                      pageContext,
                                                       '记录已删除',
                                                     );
-                                                    dialogSetState(() {});
+                                                    refreshHistory(
+                                                      dialogSetState,
+                                                    );
                                                     onDataRefreshed();
                                                   }
                                                 } catch (e) {
-                                                  if (context.mounted) {
+                                                  if (pageContext.mounted) {
                                                     showNoticeSnackBar(
-                                                      context,
+                                                      pageContext,
                                                       '删除失败: $e',
                                                     );
                                                   }
@@ -547,7 +611,7 @@ class ScheduleCard extends StatelessWidget {
                   onPressed: () async {
                     Navigator.of(dialogContext).pop();
                     final result = await Navigator.push<bool>(
-                      context,
+                      pageContext,
                       MaterialPageRoute(
                         builder: (context) => EditScheduleWidget(item: item),
                       ),
@@ -561,7 +625,7 @@ class ScheduleCard extends StatelessWidget {
                   style: TextButton.styleFrom(foregroundColor: Colors.red),
                   child: const Text('删除'),
                   onPressed: () async {
-                    final dialogNavigator = Navigator.of(context);
+                    final dialogNavigator = Navigator.of(dialogContext);
                     final bool? confirmDelete = await showDialog<bool>(
                       context: dialogContext,
                       builder: (BuildContext confirmationDialogContext) {
@@ -592,17 +656,18 @@ class ScheduleCard extends StatelessWidget {
                         );
                       },
                     );
+
                     if (confirmDelete == true) {
                       try {
                         await DB().deleteSchedule(item.id);
-                        if (context.mounted) {
+                        if (pageContext.mounted) {
                           dialogNavigator.pop();
-                          showNoticeSnackBar(context, '计划已删除');
+                          showNoticeSnackBar(pageContext, '计划已删除');
                           onDataRefreshed();
                         }
                       } catch (e) {
-                        if (context.mounted) {
-                          showNoticeSnackBar(context, '删除失败: $e');
+                        if (pageContext.mounted) {
+                          showNoticeSnackBar(pageContext, '删除失败: $e');
                         }
                       }
                     }
@@ -622,7 +687,7 @@ class ScheduleCard extends StatelessWidget {
     );
   }
 
-  void _showStatusUpdateDialog(BuildContext context) {
+  void _showStatusUpdateDialog(BuildContext pageContext) {
     final formatter = DateFormat('yyyy-MM-dd');
     DateTime selectedDate =
         item.lastCompletedDate != null
@@ -634,7 +699,7 @@ class ScheduleCard extends StatelessWidget {
     );
 
     showDialog(
-      context: context,
+      context: pageContext,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
@@ -675,7 +740,7 @@ class ScheduleCard extends StatelessWidget {
                     readOnly: true,
                     onTap: () {
                       DatePicker.showDatePicker(
-                        context,
+                        pageContext,
                         showTitleActions: true,
                         onConfirm: (date) {
                           selectedDate = date;
@@ -704,14 +769,14 @@ class ScheduleCard extends StatelessWidget {
                         finishedDate,
                         item.id,
                       );
-                      if (context.mounted) {
+                      if (pageContext.mounted) {
                         dialogNavigator.pop();
-                        showNoticeSnackBar(context, '更新成功!');
+                        showNoticeSnackBar(pageContext, '更新成功!');
                         onDataRefreshed();
                       }
                     } catch (e) {
-                      if (context.mounted) {
-                        showNoticeSnackBar(context, '更新失败: $e');
+                      if (pageContext.mounted) {
+                        showNoticeSnackBar(pageContext, '更新失败: $e');
                       }
                     }
                   },
@@ -724,7 +789,7 @@ class ScheduleCard extends StatelessWidget {
     );
   }
 
-  void _showHandleDialog(BuildContext context) {
+  void _showHandleDialog(BuildContext pageContext) {
     final commentController = TextEditingController();
     final dateController = TextEditingController();
     final formatter = DateFormat('yyyy-MM-dd');
@@ -733,7 +798,7 @@ class ScheduleCard extends StatelessWidget {
     dateController.text = formatter.format(selectedDate);
 
     showDialog(
-      context: context,
+      context: pageContext,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
@@ -750,7 +815,7 @@ class ScheduleCard extends StatelessWidget {
                 readOnly: true,
                 onTap: () {
                   DatePicker.showDatePicker(
-                    context,
+                    pageContext,
                     showTitleActions: true,
                     minTime: DateTime(2000),
                     maxTime: DateTime(2101),
@@ -787,14 +852,14 @@ class ScheduleCard extends StatelessWidget {
                 final dialogNavigator = Navigator.of(dialogContext);
                 try {
                   await DB().handleSchedule(item.id, finishedDate, comment);
-                  if (context.mounted) {
+                  if (pageContext.mounted) {
                     dialogNavigator.pop();
-                    showNoticeSnackBar(context, '保存成功!');
+                    showNoticeSnackBar(pageContext, '保存成功!');
                     onDataRefreshed();
                   }
                 } catch (e) {
-                  if (context.mounted) {
-                    showNoticeSnackBar(context, '保存失败: $e');
+                  if (pageContext.mounted) {
+                    showNoticeSnackBar(pageContext, '保存失败: $e');
                   }
                 }
               },
@@ -805,7 +870,11 @@ class ScheduleCard extends StatelessWidget {
     );
   }
 
-  Widget _buildMissedTaskWarning() {
+  Widget _buildMissedTaskWarning(Future<dynamic> historyFuture) {
+    if (isCalendarOccurrence) {
+      return const SizedBox.shrink();
+    }
+
     if (item.status != ScheduleStatus.continuing) {
       return const SizedBox.shrink();
     }
@@ -815,7 +884,7 @@ class ScheduleCard extends StatelessWidget {
     }
 
     return FutureBuilder<dynamic>(
-      future: DB().getHandleInfo(item.id),
+      future: historyFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const SizedBox.shrink();
@@ -839,7 +908,9 @@ class ScheduleCard extends StatelessWidget {
         );
         if (previousPreviousDueDate == null) return const SizedBox.shrink();
 
-        final createdDate = DateTime.parse(item.created);
+        final createdDate = DateTime.tryParse(item.created);
+        if (createdDate == null) return const SizedBox.shrink();
+
         if (!createdDate.isBefore(previousPreviousDueDate)) {
           return const SizedBox.shrink();
         }
@@ -889,6 +960,7 @@ class ScheduleCard extends StatelessWidget {
             ),
           );
         }
+
         return const SizedBox.shrink();
       },
     );
@@ -896,50 +968,60 @@ class ScheduleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
-      elevation: 2.0,
-      child: ListTile(
-        title: Text(
-          item.content,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 8.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.calendar_today,
-                    size: 13,
-                    color: Theme.of(context).primaryColor,
-                  ),
-                  const SizedBox(width: 3),
-                  Text(
-                    '下次: ${item.date}',
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              if (item.lastCompletedDate != null &&
-                  item.lastCompletedDate!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6.0),
-                  child: Row(
+    final cycleText = formatScheduleCycle(item);
+    final String? nextExecutionText = _getNextExecutionDateText();
+    final bool hasLastCompleted =
+        item.lastCompletedDate != null && item.lastCompletedDate!.isNotEmpty;
+    final bool hasFinished = item.finished != null && item.finished!.isNotEmpty;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+        elevation: 2.0,
+        child: ListTile(
+          title: Text(
+            item.content,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (item.status == ScheduleStatus.continuing &&
+                    nextExecutionText != null &&
+                    nextExecutionText.isNotEmpty) ...[
+                  Row(
                     children: [
                       Icon(
-                        Icons.check_circle_outline,
+                        Icons.calendar_today,
                         size: 13,
-                        color: Colors.green.shade700,
+                        color: Theme.of(context).primaryColor,
                       ),
                       const SizedBox(width: 3),
                       Text(
-                        '上次: ${item.lastCompletedDate}',
+                        '下次: ${_formatDate(nextExecutionText)}',
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                if (item.status == ScheduleStatus.finished && hasFinished) ...[
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.event_available,
+                        size: 13,
+                        color: Colors.blueGrey.shade700,
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        '结束于: ${_formatDate(item.finished)}',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey.shade700,
@@ -947,56 +1029,84 @@ class ScheduleCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                ),
-              Row(
-                children: [
-                  Icon(
-                    Icons.repeat_rounded,
-                    size: 13,
-                    color: Colors.grey.shade600,
-                  ),
-                  const SizedBox(width: 3),
-                  Text(
-                    item.cycleValue.label,
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                  ),
+                  const SizedBox(height: 6),
                 ],
-              ),
-            ],
-          ),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextButton(
-              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-              onPressed: () => _showHandleDialog(context),
-              child: const Text('任务'),
+                if (item.status == ScheduleStatus.giveup &&
+                    hasLastCompleted) ...[
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.history,
+                        size: 13,
+                        color: Colors.grey.shade700,
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        '上次: ${_formatDate(item.lastCompletedDate)}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                Row(
+                  children: [
+                    Icon(
+                      Icons.repeat_rounded,
+                      size: 13,
+                      color: Colors.grey.shade600,
+                    ),
+                    const SizedBox(width: 3),
+                    Text(
+                      cycleText.isNotEmpty ? cycleText : item.cycleValue.label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-            const SizedBox(width: 6),
-            if (item.status == ScheduleStatus.finished)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.done),
-                tooltip: '详情',
-                onPressed: () => _showDetailsDialog(context),
-              )
-            else if (item.status == ScheduleStatus.giveup)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.help_outline),
-                tooltip: '详情',
-                onPressed: () => _showDetailsDialog(context),
-              )
-            else
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               TextButton(
                 style: TextButton.styleFrom(
                   visualDensity: VisualDensity.compact,
                 ),
-                onPressed: () => _showDetailsDialog(context),
-                child: const Text('详情'),
+                onPressed: () => _showHandleDialog(context),
+                child: const Text('任务'),
               ),
-          ],
+              const SizedBox(width: 6),
+              if (item.status == ScheduleStatus.finished)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.done),
+                  tooltip: '详情',
+                  onPressed: () => _showDetailsDialog(context),
+                )
+              else if (item.status == ScheduleStatus.giveup)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.help_outline),
+                  tooltip: '详情',
+                  onPressed: () => _showDetailsDialog(context),
+                )
+              else
+                TextButton(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () => _showDetailsDialog(context),
+                  child: const Text('详情'),
+                ),
+            ],
+          ),
         ),
       ),
     );

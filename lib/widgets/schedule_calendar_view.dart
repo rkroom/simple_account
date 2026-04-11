@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
+
 import '../tools/entity.dart';
 import 'schedule_card.dart';
 
@@ -7,25 +8,27 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
   final DateTime focusedDay;
   final DateTime? selectedDay;
   final CalendarFormat calendarFormat;
-  final Map<DateTime, List<ScheduleItem>> events;
   final List<ScheduleItem> Function(DateTime day) getEventsForDay;
   final void Function(DateTime selectedDay, DateTime focusedDay) onDaySelected;
   final void Function(CalendarFormat format) onFormatChanged;
+  final void Function(DateTime focusedDay) onPageChanged;
   final VoidCallback onDataRefreshed;
+  final VoidCallback onClearSelection;
 
   const ScheduleCalendarViewWidget({
     super.key,
     required this.focusedDay,
     required this.selectedDay,
     required this.calendarFormat,
-    required this.events,
     required this.getEventsForDay,
     required this.onDaySelected,
     required this.onFormatChanged,
+    required this.onPageChanged,
     required this.onDataRefreshed,
+    required this.onClearSelection,
   });
 
-  Widget _buildEventsMarker(DateTime date, List events) {
+  Widget _buildEventsMarker(List events) {
     return Container(
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -36,10 +39,7 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
       child: Center(
         child: Text(
           '${events.length}',
-          style: const TextStyle().copyWith(
-            color: Colors.white,
-            fontSize: 10.0,
-          ),
+          style: const TextStyle(color: Colors.white, fontSize: 10.0),
         ),
       ),
     );
@@ -47,6 +47,9 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final List<ScheduleItem> selectedEvents =
+        selectedDay != null ? getEventsForDay(selectedDay!) : const [];
+
     return Column(
       children: [
         TableCalendar<ScheduleItem>(
@@ -61,9 +64,7 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
           eventLoader: getEventsForDay,
           onDaySelected: onDaySelected,
           onFormatChanged: onFormatChanged,
-          onPageChanged: (focusedDay) {
-            // 父组件处理
-          },
+          onPageChanged: onPageChanged,
           calendarBuilders: CalendarBuilders(
             dowBuilder: (context, day) {
               const dowText = {
@@ -87,7 +88,7 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
                 return Positioned(
                   right: 1,
                   bottom: 1,
-                  child: _buildEventsMarker(date, events),
+                  child: _buildEventsMarker(events),
                 );
               }
               return null;
@@ -101,19 +102,26 @@ class ScheduleCalendarViewWidget extends StatelessWidget {
         ),
         const SizedBox(height: 8.0),
         Expanded(
-          child:
-              selectedDay != null
-                  ? ListView.builder(
-                    itemCount: getEventsForDay(selectedDay!).length,
-                    itemBuilder: (context, index) {
-                      final item = getEventsForDay(selectedDay!)[index];
-                      return ScheduleCard(
-                        item: item,
-                        onDataRefreshed: onDataRefreshed,
-                      );
-                    },
-                  )
-                  : const Center(child: Text('选择一个日期查看任务。')),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onClearSelection,
+            child:
+                selectedDay == null
+                    ? const Center(child: Text('请选择一个日期查看任务。'))
+                    : selectedEvents.isEmpty
+                    ? const Center(child: Text('所选日期没有计划任务。'))
+                    : ListView.builder(
+                      itemCount: selectedEvents.length,
+                      itemBuilder: (context, index) {
+                        final item = selectedEvents[index];
+                        return ScheduleCard(
+                          item: item,
+                          onDataRefreshed: onDataRefreshed,
+                          isCalendarOccurrence: true,
+                        );
+                      },
+                    ),
+          ),
         ),
       ],
     );
