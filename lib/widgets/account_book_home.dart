@@ -3,9 +3,17 @@ import 'package:flutter/material.dart';
 import 'account.dart';
 import 'add.dart';
 import 'statement.dart';
+import 'statement_filter.dart';
 
 class AccountBookHome extends StatefulWidget {
-  const AccountBookHome({super.key});
+  final ValueChanged<int>? onTabChanged;
+  final StatementFilterValue filterValue;
+
+  const AccountBookHome({
+    super.key,
+    this.onTabChanged,
+    this.filterValue = const StatementFilterValue(),
+  });
 
   @override
   State<AccountBookHome> createState() => AccountBookHomeState();
@@ -13,36 +21,56 @@ class AccountBookHome extends StatefulWidget {
 
 class AccountBookHomeState extends State<AccountBookHome> {
   int _currentIndex = 0;
-  late List<Widget> pages;
-  final List<String> titles = ["添加", "账单", "账户"];
+
+  Widget _buildCurrentPage() {
+    switch (_currentIndex) {
+      case 0:
+        return const AddWidget();
+      case 1:
+        return StatementWidget(
+          startTime: widget.filterValue.startTime,
+          endTime: widget.filterValue.endTime,
+          accountParam: widget.filterValue.accountId,
+          categoryParam: widget.filterValue.categoryId,
+          flowParam: widget.filterValue.flowQuery,
+        );
+      case 2:
+        return const AccountWidget();
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  void _onTapBottomNav(int i) {
+    setState(() {
+      _currentIndex = i;
+    });
+    widget.onTabChanged?.call(i);
+  }
 
   @override
   void initState() {
     super.initState();
-    _initializePages();
-  }
-
-  void _initializePages() {
-    pages = [const AddWidget(), const StatementWidget(), const AccountWidget()];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onTabChanged?.call(_currentIndex);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: pages[_currentIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.plus_one), label: '记账'),
-          BottomNavigationBarItem(icon: Icon(Icons.receipt), label: '账单'),
-          BottomNavigationBarItem(icon: Icon(Icons.local_atm), label: '账户'),
-        ],
-        currentIndex: _currentIndex,
-        onTap: (int i) {
-          setState(() {
-            _currentIndex = i;
-          });
-        },
-      ),
+    return Column(
+      children: [
+        Expanded(child: _buildCurrentPage()),
+        BottomNavigationBar(
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.plus_one), label: '记账'),
+            BottomNavigationBarItem(icon: Icon(Icons.receipt), label: '账单'),
+            BottomNavigationBarItem(icon: Icon(Icons.local_atm), label: '账户'),
+          ],
+          currentIndex: _currentIndex,
+          onTap: _onTapBottomNav,
+        ),
+      ],
     );
   }
 }
