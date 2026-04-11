@@ -7,6 +7,22 @@ import '../tools/db.dart';
 import '../tools/tools.dart';
 import 'selector_sheets.dart';
 
+class TransactionFormData {
+  final String amount;
+  final int categoryId;
+  final int accountId;
+  final String comment;
+  final DateTime whenTime;
+
+  const TransactionFormData({
+    required this.amount,
+    required this.categoryId,
+    required this.accountId,
+    required this.comment,
+    required this.whenTime,
+  });
+}
+
 class Transactions extends StatefulWidget {
   final String? amount;
   final Transaction flow;
@@ -25,6 +41,16 @@ class Transactions extends StatefulWidget {
   final void Function(Map category)? onCategoryConfirm;
   final void Function(Map account)? onAccountConfirm;
   final void Function(DateTime time)? onTimeChanged;
+
+  /// 编辑时用于回填备注
+  final String initialComment;
+
+  /// 按钮文案，新增时默认“添加”，编辑时可传“保存”
+  final String submitButtonText;
+
+  /// 自定义提交逻辑。
+  /// 为空时走默认新增逻辑；不为空时由外部接管，例如编辑保存。
+  final Future<void> Function(TransactionFormData data)? onSubmit;
 
   const Transactions({
     super.key,
@@ -45,6 +71,9 @@ class Transactions extends StatefulWidget {
     this.onCategoryConfirm,
     this.onAccountConfirm,
     this.onTimeChanged,
+    this.initialComment = '',
+    this.submitButtonText = '添加',
+    this.onSubmit,
   });
 
   @override
@@ -57,7 +86,7 @@ class TransactionsState extends State<Transactions> {
   static const TextScaler customTextScaler = TextScaler.linear(1.2);
 
   late TextEditingController _amountController;
-  final TextEditingController _commentController = TextEditingController();
+  late TextEditingController _commentController;
   final FocusNode _blankFocusNode = FocusNode();
   bool _isSubmitting = false;
 
@@ -72,6 +101,7 @@ class TransactionsState extends State<Transactions> {
   void initState() {
     super.initState();
     _amountController = TextEditingController(text: widget.amount);
+    _commentController = TextEditingController(text: widget.initialComment);
     selectedCategory = widget.selectedCategory;
     whenTime = widget.time;
     showAccount = widget.accountText;
@@ -88,6 +118,13 @@ class TransactionsState extends State<Transactions> {
       final newAmount = widget.amount ?? '';
       if (_amountController.text != newAmount) {
         _amountController.text = newAmount;
+      }
+    }
+
+    if (oldWidget.initialComment != widget.initialComment) {
+      final newComment = widget.initialComment;
+      if (_commentController.text != newComment) {
+        _commentController.text = newComment;
       }
     }
 
@@ -225,6 +262,85 @@ class TransactionsState extends State<Transactions> {
     );
   }
 
+  Future<void> _handleSubmit() async {
+    final amountText = _amountController.text.trim();
+    final amount = double.tryParse(amountText);
+
+    if (amountText.isEmpty) {
+      showNoticeSnackBar(context, "金额不能为空");
+      widget.addSuccess?.call(false);
+      return;
+    }
+
+    if (amount == null || amount < 0) {
+      showNoticeSnackBar(context, "请输入正确的金额");
+      widget.addSuccess?.call(false);
+      return;
+    }
+
+    if (categoryId == null) {
+      showNoticeSnackBar(context, "请选择类目");
+      widget.addSuccess?.call(false);
+      return;
+    }
+
+    if (accountId == null) {
+      showNoticeSnackBar(context, "请选择账户");
+      widget.addSuccess?.call(false);
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      final payload = TransactionFormData(
+        amount: amountText,
+        categoryId: categoryId!,
+        accountId: accountId!,
+        comment: _commentController.text.trim(),
+        whenTime: whenTime,
+      );
+
+      if (widget.onSubmit != null) {
+        await widget.onSubmit!(payload);
+      } else {
+        await DB().addBill(
+          categoryId!,
+          widget.flow.value,
+          amountText,
+          accountId!,
+          _commentController.text.trim(),
+          whenTime.toString(),
+        );
+
+        if (!mounted) return;
+
+        _amountController.clear();
+        _commentController.clear();
+        widget.onAmountChanged?.call('');
+      }
+
+      widget.addSuccess?.call(true);
+    } catch (error) {
+      if (!mounted) return;
+
+      debugPrint(error.toString());
+      showNoticeSnackBar(
+        context,
+        widget.onSubmit == null ? "添加失败，请检查输入" : "保存失败，请检查输入",
+      );
+      widget.addSuccess?.call(false);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Focus(
@@ -319,73 +435,11 @@ class TransactionsState extends State<Transactions> {
                     ],
                   ),
                   ElevatedButton(
-                    onPressed:
-                        _isSubmitting
-                            ? null
-                            : () async {
-                              final amountText = _amountController.text.trim();
-                              final amount = double.tryParse(amountText);
-
-                              if (amountText.isEmpty) {
-                                showNoticeSnackBar(context, "金额不能为空");
-                                widget.addSuccess?.call(false);
-                                return;
-                              }
-
-                              if (amount == null || amount < 0) {
-                                showNoticeSnackBar(context, "请输入正确的金额");
-                                widget.addSuccess?.call(false);
-                                return;
-                              }
-
-                              if (categoryId == null) {
-                                showNoticeSnackBar(context, "请选择类目");
-                                widget.addSuccess?.call(false);
-                                return;
-                              }
-
-                              if (accountId == null) {
-                                showNoticeSnackBar(context, "请选择账户");
-                                widget.addSuccess?.call(false);
-                                return;
-                              }
-
-                              setState(() {
-                                _isSubmitting = true;
-                              });
-
-                              try {
-                                await DB().addBill(
-                                  categoryId!,
-                                  widget.flow.value,
-                                  amountText,
-                                  accountId!,
-                                  _commentController.text,
-                                  whenTime.toString(),
-                                );
-
-                                if (!mounted) return;
-
-                                _amountController.clear();
-                                _commentController.clear();
-                                widget.onAmountChanged?.call('');
-                                widget.addSuccess?.call(true);
-                              } catch (error) {
-                                if (!context.mounted) return;
-
-                                debugPrint(error.toString());
-                                showNoticeSnackBar(context, "添加失败，请检查输入");
-                                widget.addSuccess?.call(false);
-                              } finally {
-                                if (mounted) {
-                                  setState(() {
-                                    _isSubmitting = false;
-                                  });
-                                }
-                              }
-                            },
+                    onPressed: _isSubmitting ? null : _handleSubmit,
                     child:
-                        _isSubmitting ? const Text("添加中...") : const Text("添加"),
+                        _isSubmitting
+                            ? Text("${widget.submitButtonText}中...")
+                            : Text(widget.submitButtonText),
                   ),
                 ],
               ),

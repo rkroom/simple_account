@@ -19,26 +19,40 @@ class DB {
   static Future<Database>? _databaseFuture;
 
   Future<Database> get database async {
-    // 如果已经初始化，直接返回数据库实例
+    // 已初始化
     if (_database != null) {
       return _database!;
     }
 
-    // 如果正在初始化，等待初始化完成
+    // 正在初始化
     if (_databaseFuture != null) {
-      return await _databaseFuture!;
+      try {
+        return await _databaseFuture!;
+      } catch (_) {
+        // 防止失败 Future 被一直复用
+        _databaseFuture = null;
+        rethrow;
+      }
     }
 
-    // 获取数据库路径并开始初始化
     final path = await ConfigService().getDBPath();
     final password = await ConfigService().getDBPassword();
-    _databaseFuture = _initDB(path, password);
 
-    // 等待初始化完成后缓存实例并清理 Future
-    _database = await _databaseFuture!;
-    _databaseFuture = null;
+    final future = _initDB(path, password);
+    _databaseFuture = future;
 
-    return _database!;
+    try {
+      final db = await future;
+      _database = db;
+      return db;
+    } catch (_) {
+      _database = null;
+      rethrow;
+    } finally {
+      if (identical(_databaseFuture, future)) {
+        _databaseFuture = null;
+      }
+    }
   }
 
   Future<Database> _initDB(path, password) async {
@@ -81,29 +95,41 @@ class DB {
     int id,
     Map<String, dynamic> updates,
   ) async {
-    var db = await database;
+    final db = await database;
 
-    final List<dynamic> args = [
-      updates['content'],
-      updates['round'],
-      updates['finaldate'],
-      updates['datesign'],
-      updates['rule_type'],
-      updates['rule_params'],
+    const allowedFields = {
+      'content',
+      'round',
+      'finaldate',
+      'datesign',
+      'rule_type',
+      'rule_params',
+    };
+
+    final entries = updates.entries
+        .where((e) => allowedFields.contains(e.key))
+        .toList(growable: false);
+
+    if (entries.isEmpty) {
+      return 0;
+    }
+
+    final setClause = entries.map((e) => '${e.key} = ?').join(', ');
+    final args = <dynamic>[
+      ...entries.map((e) {
+        if (e.key == 'finaldate' && e.value != null) {
+          return _normalizeSqliteDateTime(e.value);
+        }
+        return e.value;
+      }),
       id,
     ];
 
     return db.rawUpdate('''
-    UPDATE schemes_project_info 
-    SET 
-      content = ?, 
-      round = ?, 
-      finaldate = ?, 
-      datesign = ?,
-      rule_type = ?,
-      rule_params = ?
+    UPDATE schemes_project_info
+    SET $setClause
     WHERE id = ?
-    ''', args);
+  ''', args);
   }
 
   Future<int> deleteSchedule(int id) async {
@@ -200,23 +226,53 @@ class DB {
   }
 
   Future<List> getContinuingSchedules() async {
-    var db = await database;
+    final db = await database;
     return db.rawQuery("""
-      select sh.id as shid,sp.*,strftime('%Y-%m-%d',sp.created) as createdf,strftime('%Y-%m-%d',sp.finaldate) as finaldatef,
-      strftime('%Y-%m-%d',sp.finished) as finishedf,sh.id as shid,sh.handledate,sh.comment from schemes_project_info as sp 
-      LEFT join (select id,strftime('%Y-%m-%d',max(handledate)) as handledate,comment,project_id from schemes_handle_info GROUP by project_id ) as sh 
-      on sp.id = sh.project_id WHERE sp.type='schedule' AND sp.status ='continuing'
-      """);
+    SELECT
+      sh.id AS shid,
+      sp.*,
+      strftime('%Y-%m-%d', sp.created) AS createdf,
+      strftime('%Y-%m-%d', sp.finaldate) AS finaldatef,
+      strftime('%Y-%m-%d', sp.finished) AS finishedf,
+      strftime('%Y-%m-%d', sh.handledate) AS handledate,
+      sh.comment
+    FROM schemes_project_info AS sp
+    LEFT JOIN schemes_handle_info AS sh
+      ON sh.id = (
+        SELECT shi.id
+        FROM schemes_handle_info AS shi
+        WHERE shi.project_id = sp.id
+        ORDER BY shi.handledate DESC, shi.id DESC
+        LIMIT 1
+      )
+    WHERE sp.type = 'schedule'
+      AND sp.status = 'continuing'
+  """);
   }
 
   Future<List> getScheduledTasks() async {
-    var db = await database;
+    final db = await database;
     return db.rawQuery("""
-      select sh.id as shid,sp.*,strftime('%Y-%m-%d',sp.created) as createdf,strftime('%Y-%m-%d',sp.finaldate) as finaldatef,
-      strftime('%Y-%m-%d',sp.finished) as finishedf,sh.id as shid,sh.handledate,sh.comment from schemes_project_info as sp 
-      LEFT join (select id,strftime('%Y-%m-%d',max(handledate)) as handledate,comment,project_id from schemes_handle_info GROUP by project_id ) as sh 
-      on sp.id = sh.project_id WHERE sp.type='schedule' ORDER by status
-      """);
+    SELECT
+      sh.id AS shid,
+      sp.*,
+      strftime('%Y-%m-%d', sp.created) AS createdf,
+      strftime('%Y-%m-%d', sp.finaldate) AS finaldatef,
+      strftime('%Y-%m-%d', sp.finished) AS finishedf,
+      strftime('%Y-%m-%d', sh.handledate) AS handledate,
+      sh.comment
+    FROM schemes_project_info AS sp
+    LEFT JOIN schemes_handle_info AS sh
+      ON sh.id = (
+        SELECT shi.id
+        FROM schemes_handle_info AS shi
+        WHERE shi.project_id = sp.id
+        ORDER BY shi.handledate DESC, shi.id DESC
+        LIMIT 1
+      )
+    WHERE sp.type = 'schedule'
+    ORDER BY sp.status
+  """);
   }
 
   ///
@@ -371,6 +427,7 @@ JOIN TopValues t on a.id = t.account_info_id""",
       SELECT
         i.name AS account,
         b.account_info_id AS account_id,
+        b.types_id AS category_id,
         CASE b.flow
           WHEN 'consume' THEN '支出'
           WHEN 'income' THEN '收入'
@@ -438,6 +495,32 @@ JOIN TopValues t on a.id = t.account_info_id""",
     String finalQuery = sqlBuilder.toString();
 
     return db.rawQuery(finalQuery, queryParams);
+  }
+
+  Future<int> updateBill({
+    required int id,
+    required int categoryId,
+    required String flow,
+    required String detailed,
+    required int accountId,
+    required String comment,
+    required DateTime whenTime,
+  }) async {
+    final db = await database;
+
+    return db.update(
+      'books_account_book',
+      {
+        'types_id': categoryId,
+        'flow': flow,
+        'detailed': detailed,
+        'account_info_id': accountId,
+        'comment': comment,
+        'when_time': _normalizeSqliteDateTime(whenTime),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   //删除账单
@@ -573,10 +656,36 @@ JOIN TopValues t on a.id = t.account_info_id""",
     if (time is DateTime) {
       return DateFormat('yyyy-MM-dd HH:mm:ss').format(time);
     }
+
     if (time is String) {
-      return time.length >= 19 ? time.substring(0, 19) : time;
+      final value = time.trim();
+      if (value.isEmpty) {
+        throw ArgumentError('时间字符串不能为空');
+      }
+
+      final normalized = value.replaceFirst('T', ' ');
+
+      if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(normalized)) {
+        return '$normalized 00:00:00';
+      }
+
+      if (RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$').hasMatch(normalized)) {
+        return '$normalized:00';
+      }
+
+      if (RegExp(
+        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$',
+      ).hasMatch(normalized)) {
+        return normalized;
+      }
+
+      final parsed = DateTime.tryParse(value);
+      if (parsed != null) {
+        return DateFormat('yyyy-MM-dd HH:mm:ss').format(parsed.toLocal());
+      }
     }
-    throw ArgumentError('时间参数必须是 DateTime 或 String');
+
+    throw ArgumentError('时间参数必须是 DateTime 或可解析的 String');
   }
 
   Future<List<Map<String, dynamic>>> gettabledataWithBalance(
@@ -814,6 +923,7 @@ JOIN TopValues t on a.id = t.account_info_id""",
     SELECT
       i.name AS account,
       pr.account_info_id AS account_id,
+      pr.types_id AS category_id,
       CASE
         WHEN pr.flow = 'consume' THEN '支出'
         WHEN pr.flow = 'income' THEN '收入'
@@ -1133,22 +1243,51 @@ JOIN TopValues t on a.id = t.account_info_id""",
 */
   //测试数据库文件
   Future<bool> checkDBfile(String path, String password) async {
+    Database? db;
     try {
-      await openDatabase(path, password: password);
+      final file = File(path);
+      if (!await file.exists()) {
+        return false;
+      }
+
+      db = await openDatabase(
+        path,
+        password: password,
+        readOnly: true,
+        singleInstance: false,
+      );
+
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
       return true;
-    } catch (error) {
+    } catch (_) {
       return false;
+    } finally {
+      if (db != null && db.isOpen) {
+        await db.close();
+      }
     }
   }
 
   //修改数据库文件
   Future<bool> changeDBfile(String path, String password) async {
     await closeDB();
-    _databaseFuture = _initDB(path, password);
-    Global.config = Config(path, password);
-    _database = await _databaseFuture!;
-    _databaseFuture = null;
-    return _database?.isOpen ?? false;
+
+    final future = _initDB(path, password);
+    _databaseFuture = future;
+
+    try {
+      final db = await future;
+      _database = db;
+      Global.config = Config(path, password);
+      return db.isOpen;
+    } catch (_) {
+      _database = null;
+      rethrow;
+    } finally {
+      if (identical(_databaseFuture, future)) {
+        _databaseFuture = null;
+      }
+    }
   }
 
   //关闭数据库
@@ -1163,11 +1302,12 @@ JOIN TopValues t on a.id = t.account_info_id""",
 
   //创建数据库
   Future createDatabase(String path, String password) async {
+    await closeDB();
     PackageInfo packageInfo = await PackageInfo.fromPlatform();
     try {
       File file = File(path);
       if (await file.exists()) {
-        deleteDatabase(path);
+        await deleteDatabase(path);
       }
     } catch (error) {
       rethrow;

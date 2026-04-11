@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:infinite_scroll_pagination/infinite_scroll_pagination.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:simple_account/tools/tools.dart';
 
+import '../tools/config_enum.dart';
 import '../tools/db.dart';
 import '../tools/event_bus.dart';
+import 'transactions.dart';
 
 class StatementWidget extends StatefulWidget {
   final DateTime? startTime;
@@ -136,6 +139,171 @@ class StatementWidgetState extends State<StatementWidget> {
     });
   }
 
+  Transaction _toTransaction(String flowSign) {
+    switch (flowSign) {
+      case 'income':
+        return Transaction.income;
+      case 'consume':
+      default:
+        return Transaction.consume;
+    }
+  }
+
+  DateTime _parseStatementTime(String value) {
+    try {
+      return DateFormat('yyyy-MM-dd HH:mm').parseStrict(value);
+    } catch (_) {
+      return DateTime.now();
+    }
+  }
+
+  List<int>? _findSelectedCategory(
+    List categories,
+    String currentCategoryText,
+  ) {
+    for (int i = 0; i < categories.length; i++) {
+      final item = categories[i];
+      if (item is Map && item.isNotEmpty) {
+        final entry = item.entries.first;
+        final children =
+            (entry.value as List).map((e) => e.toString()).toList();
+        final childIndex = children.indexOf(currentCategoryText);
+        if (childIndex >= 0) {
+          return [i, childIndex];
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> _showEditSheet(StatementItem item) async {
+    if (item.id == null) {
+      showNoticeSnackBar(context, '无法编辑：记录 id 为空');
+      return;
+    }
+
+    if (item.isTransfer) {
+      showNoticeSnackBar(context, '当前版本暂不支持编辑转账记录');
+      return;
+    }
+
+    if (item.accountId == null ||
+        item.categoryId == null ||
+        item.flowSign.isEmpty) {
+      showNoticeSnackBar(context, '无法编辑：记录缺少必要字段');
+      return;
+    }
+
+    try {
+      final accountRows = List<Map<String, dynamic>>.from(
+        await DB().getAccounts(),
+      );
+      final categoryRows = List<Map<String, dynamic>>.from(
+        await DB().getCategorys(item.flowSign),
+      );
+
+      final List<String> accountNames = [];
+      final Map<String, int> accountIndexs = {};
+
+      for (final row in accountRows) {
+        final name = row['name']?.toString() ?? '';
+        final id = StatementItem._toInt(row['id']);
+        if (name.isNotEmpty && id != null) {
+          accountNames.add(name);
+          accountIndexs[name] = id;
+        }
+      }
+
+      final Map<String, List<String>> grouped = {};
+      final Map<String, int> categoryIndex = {};
+
+      for (final row in categoryRows) {
+        final parent = row['name']?.toString() ?? '';
+        final child = row['specific_category']?.toString() ?? '';
+        final id = StatementItem._toInt(row['id']);
+
+        if (parent.isEmpty || child.isEmpty || id == null) continue;
+
+        grouped.putIfAbsent(parent, () => []);
+        grouped[parent]!.add(child);
+        categoryIndex[child] = id;
+      }
+
+      final categories = grouped.entries
+          .map((e) => {e.key: e.value})
+          .toList(growable: false);
+
+      if (!mounted) return;
+
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (sheetContext) {
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: SingleChildScrollView(
+                child: Transactions(
+                  amount: item.amount,
+                  flow: _toTransaction(item.flowSign),
+                  accountNames: accountNames,
+                  accountIndexs: accountIndexs,
+                  selectedCategory: _findSelectedCategory(
+                    categories,
+                    item.category,
+                  ),
+                  categoryIndex: categoryIndex,
+                  categories: categories,
+                  time: _parseStatementTime(item.date),
+                  accountText: item.account,
+                  accountId: item.accountId,
+                  categoryText: item.category,
+                  categoryId: item.categoryId,
+                  initialComment: item.comment,
+                  submitButtonText: '保存',
+                  onSubmit: (formData) async {
+                    await DB().updateBill(
+                      id: item.id!,
+                      categoryId: formData.categoryId,
+                      flow: item.flowSign,
+                      detailed: formData.amount,
+                      accountId: formData.accountId,
+                      comment: formData.comment,
+                      whenTime: formData.whenTime,
+                    );
+                  },
+                  addSuccess: (success) {
+                    if (!success) return;
+
+                    if (sheetContext.mounted) {
+                      Navigator.of(sheetContext).pop();
+                    }
+
+                    _refreshList();
+                    if (mounted) {
+                      showNoticeSnackBar(context, '编辑成功');
+                    }
+                  },
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } catch (error) {
+      if (mounted) {
+        showNoticeSnackBar(context, '打开编辑失败：$error');
+      }
+    }
+  }
+
   Future<void> _deleteItem(StatementItem item) async {
     if (item.id == null) {
       if (mounted) {
@@ -233,9 +401,21 @@ class StatementWidgetState extends State<StatementWidget> {
                     if (isExpanded)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: ElevatedButton(
-                          onPressed: () => _showConfirmationDialog(item),
-                          child: const Text('删除'),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (!item.isTransfer) ...[
+                              ElevatedButton(
+                                onPressed: () => _showEditSheet(item),
+                                child: const Text('编辑'),
+                              ),
+                              const SizedBox(width: 12),
+                            ],
+                            ElevatedButton(
+                              onPressed: () => _showConfirmationDialog(item),
+                              child: const Text('删除'),
+                            ),
+                          ],
                         ),
                       ),
                   ],
@@ -261,6 +441,10 @@ class StatementWidgetState extends State<StatementWidget> {
 
 class StatementItem {
   final int? id;
+  final int? accountId;
+  final int? categoryId;
+  final String flowSign;
+
   final String date;
   final String account;
   final String aimAccount;
@@ -272,6 +456,9 @@ class StatementItem {
 
   const StatementItem({
     required this.id,
+    required this.accountId,
+    required this.categoryId,
+    required this.flowSign,
     required this.date,
     required this.account,
     required this.aimAccount,
@@ -285,6 +472,9 @@ class StatementItem {
   factory StatementItem.fromMap(Map<String, dynamic> map) {
     return StatementItem(
       id: _toInt(map['id']),
+      accountId: _toInt(map['account_id']),
+      categoryId: _toInt(map['category_id']),
+      flowSign: map['flowSign']?.toString() ?? '',
       date: map['date']?.toString() ?? '',
       account: map['account']?.toString() ?? '',
       aimAccount: map['aim_account']?.toString() ?? '',
