@@ -19,11 +19,18 @@ class Global {
 
   static late String externalStorageDirectory;
 
+  static bool biometricUnlockEnabled = false;
+
   static Future init() async {
     externalStorageDirectory = (await getExternalStorageDirectory())!.path;
     config = await ConfigService().getConfig();
-    if (config != null) {
-      jumpLoad = true;
+    jumpLoad = config != null;
+
+    if (jumpLoad) {
+      biometricUnlockEnabled =
+          await ConfigService().getBiometricUnlockEnabled();
+    } else {
+      biometricUnlockEnabled = false;
     }
   }
 }

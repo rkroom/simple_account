@@ -184,6 +184,16 @@ class ConfigService {
     return box.put("nlConfig", hasSaved);
   }
 
+  Future<bool> getBiometricUnlockEnabled() async {
+    var box = await _box;
+    return box.get("biometricUnlockEnabled", defaultValue: false);
+  }
+
+  Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    var box = await _box;
+    return box.put("biometricUnlockEnabled", enabled);
+  }
+
   Future<bool> resetSettings() async {
     var box = await _box;
     try {
@@ -193,6 +203,7 @@ class ConfigService {
       await box.delete("scheduleNotificationTaskTime");
       await box.delete("accConfig");
       await box.delete("nlConfig");
+      await box.delete("biometricUnlockEnabled");
       return true;
     } catch (e) {
       //debugPrint(e.toString());

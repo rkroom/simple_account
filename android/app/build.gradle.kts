@@ -62,12 +62,12 @@ android {
 }
 
 dependencies {
-    implementation("androidx.collection:collection-ktx:1.5.0")
-    implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation("androidx.collection:collection-ktx:1.6.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.google.errorprone:error_prone_annotations:2.39.0") // required by flutter_secure_storage
-    implementation("com.github.spotbugs:spotbugs-annotations:4.9.3") // required by flutter_secure_storage
+    implementation("com.github.spotbugs:spotbugs-annotations:4.9.8") // required by flutter_secure_storage
 //    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("com.jakewharton.timber:timber:5.0.1")
 }

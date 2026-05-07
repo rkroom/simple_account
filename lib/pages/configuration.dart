@@ -14,6 +14,7 @@ import '../tools/native_method_channel.dart';
 import '../tools/tools.dart';
 import '../tools/workmanager_tool.dart';
 import '../widgets/app_selection_screen.dart';
+import '../tools/local_auth_service.dart';
 
 class ConfigurationWidget extends StatefulWidget {
   const ConfigurationWidget({super.key});
@@ -46,6 +47,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   List<PackageConfig> _nlAllowedPackages = [];
 
   String _logLevel = 'OFF';
+
+  bool _biometricUnlockEnabled = false;
+  bool _biometricAvailable = false;
 
   @override
   void initState() {
@@ -123,6 +127,16 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       final List<PackageConfig> nlPackages =
           rawNlData?.map((data) => PackageConfig.fromJson(data)).toList() ?? [];
 
+      var biometricEnabled = await ConfigService().getBiometricUnlockEnabled();
+      final biometricAvailable = await LocalAuthService.canUseBiometrics();
+
+      if (biometricEnabled && !biometricAvailable) {
+        biometricEnabled = false;
+        await ConfigService().setBiometricUnlockEnabled(false);
+      }
+
+      Global.biometricUnlockEnabled = biometricEnabled;
+
       if (!mounted) return;
       setState(() {
         _accessibilityChecked = acc;
@@ -147,6 +161,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _logLevel = resolvedLogLevel;
 
         _isLoading = false;
+
+        _biometricUnlockEnabled = biometricEnabled;
+        _biometricAvailable = biometricAvailable;
       });
     } catch (e) {
       if (mounted) {
@@ -154,6 +171,41 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       }
       showNoticeSnackBar(context, '加载配置失败: $e');
     }
+  }
+
+  Future<void> handleBiometricUnlockToggle(bool enabled) async {
+    if (enabled) {
+      final canUse = await LocalAuthService.canUseBiometrics();
+
+      if (!canUse) {
+        if (mounted) {
+          showNoticeSnackBar(context, '当前设备未录入指纹或不支持生物识别');
+        }
+        return;
+      }
+
+      final passed = await LocalAuthService.authenticate(
+        reason: '请验证指纹以开启指纹解锁',
+      );
+
+      if (!passed) {
+        if (mounted) {
+          showNoticeSnackBar(context, '验证失败，未开启指纹解锁');
+        }
+        return;
+      }
+    }
+
+    await ConfigService().setBiometricUnlockEnabled(enabled);
+    Global.biometricUnlockEnabled = enabled;
+
+    if (!mounted) return;
+
+    setState(() {
+      _biometricUnlockEnabled = enabled;
+    });
+
+    showNoticeSnackBar(context, enabled ? '已开启指纹解锁' : '已关闭指纹解锁');
   }
 
   void _pickTaskTime() {
@@ -263,6 +315,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       try {
         await ConfigService().resetSettings();
         await NativeMethodChannel.instance.clearAllConfig();
+
+        Global.biometricUnlockEnabled = false;
 
         await WorkmanagerTool.cancelDailyTask();
         await WorkmanagerTool.cancelScheduleNotificationTask();
@@ -579,6 +633,35 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               onTap: () async {
                 await openAppSettings();
               },
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('指纹解锁应用'),
+              subtitle: Text(
+                _biometricAvailable ? '开启后，下次启动应用需要验证指纹' : '当前设备未录入指纹或不支持生物识别',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              trailing: Checkbox(
+                value: _biometricUnlockEnabled,
+                onChanged:
+                    _biometricAvailable
+                        ? (bool? checked) async {
+                          if (checked != null) {
+                            await handleBiometricUnlockToggle(checked);
+                          }
+                        }
+                        : null,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap:
+                  _biometricAvailable
+                      ? () async {
+                        await handleBiometricUnlockToggle(
+                          !_biometricUnlockEnabled,
+                        );
+                      }
+                      : null,
             ),
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
