@@ -21,7 +21,7 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        //可能同样需要检查MyAccessibilityService
+        // 可能同样需要检查MyAccessibilityService
         if (MyNotificationListenerService.isNotificationListenerEnabled(this)) {
             // NotificationListenerService被系统退出后再次启动不会bindService
             // 检测服务是否被Bind，若否则重启服务，触发reBind
@@ -32,11 +32,15 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    /*
-    override fun onResume(){
-        super.onResume();
+    override fun onResume() {
+        super.onResume()
+        MethodChannelService.cancelExitTimer()
     }
-    */
+
+    override fun onDestroy() {
+        MethodChannelService.cancelExitTimer()
+        super.onDestroy()
+    }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)

@@ -12,6 +12,7 @@ createConfig(String path, String password) async {
 class Global {
   // 配置信息
   static Config? config;
+
   // 是否跳过Loading页
   static bool jumpLoad = false;
 
@@ -21,6 +22,9 @@ class Global {
 
   static bool biometricUnlockEnabled = false;
 
+  // 当前 App 进程会话是否已经完成解锁。
+  static bool biometricUnlockedInCurrentSession = true;
+
   static Future init() async {
     externalStorageDirectory = (await getExternalStorageDirectory())!.path;
     config = await ConfigService().getConfig();
@@ -29,8 +33,13 @@ class Global {
     if (jumpLoad) {
       biometricUnlockEnabled =
           await ConfigService().getBiometricUnlockEnabled();
+
+      // 如果开启了生物识别，则冷启动时默认未解锁。
+      // 如果未开启生物识别，则视为已解锁。
+      biometricUnlockedInCurrentSession = !biometricUnlockEnabled;
     } else {
       biometricUnlockEnabled = false;
+      biometricUnlockedInCurrentSession = true;
     }
   }
 }

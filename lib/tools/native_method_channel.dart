@@ -24,8 +24,17 @@ class NativeMethodChannel {
     return await _channel.invokeMethod('checkNotificationPermission');
   }
 
-  Future<void> minimizeApp() async {
-    await _channel.invokeMethod('minimizeApp');
+  Future<bool> minimizeApp() async {
+    final bool? result = await _channel.invokeMethod<bool>('minimizeApp');
+    return result ?? false;
+  }
+
+  Future<void> cancelExitTimer() async {
+    try {
+      await _channel.invokeMethod('cancelExitTimer');
+    } catch (e) {
+      debugPrint('Failed to cancel exit timer: $e');
+    }
   }
 
   Future<void> requestNotificationListenerPermission() async {

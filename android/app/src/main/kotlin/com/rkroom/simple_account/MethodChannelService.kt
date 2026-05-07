@@ -1,6 +1,9 @@
 package com.rkroom.simple_account
 
 import android.content.Intent
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.lifecycle.lifecycleScope
 import io.flutter.plugin.common.BinaryMessenger
@@ -17,6 +20,33 @@ class MethodChannelService {
         private val json = Json {
             ignoreUnknownKeys = true
             isLenient = true
+        }
+
+        private val exitHandler = Handler(Looper.getMainLooper())
+        private var exitRunnable: Runnable? = null
+        private const val EXIT_DELAY_MILLIS = 5 * 60 * 1000L
+
+        private fun startExitTimer(activity: MainActivity) {
+            cancelExitTimer()
+
+            exitRunnable = Runnable {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        activity.finishAndRemoveTask()
+                    } else {
+                        activity.finish()
+                    }
+                } catch (_: Exception) {
+                    activity.finish()
+                }
+            }
+
+            exitHandler.postDelayed(exitRunnable!!, EXIT_DELAY_MILLIS)
+        }
+
+        fun cancelExitTimer() {
+            exitRunnable?.let { exitHandler.removeCallbacks(it) }
+            exitRunnable = null
         }
 
         fun registerMethodCallHandler(activity: MainActivity, binaryMessenger: BinaryMessenger) {
@@ -42,7 +72,16 @@ class MethodChannelService {
                             result.success(hasPermission)
                         }
                         "minimizeApp" -> {
-                            activity.moveTaskToBack(false)
+                            val moved = activity.moveTaskToBack(true)
+
+                            if (moved) {
+                                startExitTimer(activity)
+                            }
+
+                            result.success(moved)
+                        }
+                        "cancelExitTimer" -> {
+                            cancelExitTimer()
                             result.success(null)
                         }
                         "getBills" -> {

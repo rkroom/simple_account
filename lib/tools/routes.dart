@@ -7,7 +7,6 @@ import 'package:simple_account/pages/statistic.dart';
 import '../pages/home.dart';
 import '../pages/loading.dart';
 import '../pages/manage.dart';
-import '../pages/auth_gate.dart';
 import 'config.dart';
 
 final Map<String, Function> routes = {
@@ -16,11 +15,7 @@ final Map<String, Function> routes = {
       return const LoadingWidget();
     }
 
-    if (Global.biometricUnlockEnabled) {
-      return const AuthGateWidget();
-    }
-
-    return HomeWidget();
+    return const HomeWidget();
   },
   '/home': (context) => HomeWidget(),
   '/createdb': (context) => const CreateDatabaseWidget(),

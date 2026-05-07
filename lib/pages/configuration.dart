@@ -186,6 +186,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
       final passed = await LocalAuthService.authenticate(
         reason: '请验证指纹以开启指纹解锁',
+        androidTitle: '验证指纹以开启功能',
+        androidHint: '请验证指纹',
       );
 
       if (!passed) {

@@ -25,7 +25,11 @@ class LocalAuthService {
     }
   }
 
-  static Future<bool> authenticate({String reason = '请验证指纹以解锁应用'}) async {
+  static Future<bool> authenticate({
+    String reason = '请验证指纹以解锁应用',
+    String androidTitle = '账本需解锁',
+    String androidHint = '请验证指纹',
+  }) async {
     try {
       final bool canUse = await canUseBiometrics();
       if (!canUse) return false;
@@ -34,10 +38,10 @@ class LocalAuthService {
         localizedReason: reason,
         biometricOnly: true,
         persistAcrossBackgrounding: true,
-        authMessages: const <AuthMessages>[
+        authMessages: <AuthMessages>[
           AndroidAuthMessages(
-            signInTitle: '账本需解锁',
-            signInHint: '请验证指纹',
+            signInTitle: androidTitle,
+            signInHint: androidHint,
             cancelButton: '取消',
           ),
         ],

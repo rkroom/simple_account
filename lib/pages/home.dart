@@ -28,13 +28,11 @@ class HomeWidget extends StatefulWidget {
   }
 }
 
-class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
+class HomeWidgetState extends State<HomeWidget> {
   int _selectedHome = 0;
   int _accountBookTabIndex = 0;
   StatementFilterValue _statementFilter = const StatementFilterValue();
 
-  // 定时器，应用进入后台后一定时间内未被再次打开则彻底退出应用。
-  Timer? _exitTimer;
   late final StreamSubscription<String?> _notificationSubscription;
 
   Future<void> _openStatementFilter() async {
@@ -73,6 +71,7 @@ class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
       String? payload,
     ) async {
       if (payload == '/home/schedule') {
+        if (!mounted) return;
         setState(() {
           _selectedHome = 1;
         });
@@ -141,7 +140,6 @@ class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
 
     _configureSelectNotificationListener();
     _checkAppLaunchFromNotification();
@@ -174,21 +172,7 @@ class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) async {
-    super.didChangeAppLifecycleState(state);
-
-    if (state == AppLifecycleState.resumed) {
-      // 用户重新回到应用时，取消定时器
-      if (_exitTimer != null && _exitTimer!.isActive) {
-        _exitTimer!.cancel();
-      }
-    }
-  }
-
-  @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _exitTimer?.cancel();
     _notificationSubscription.cancel();
     super.dispose();
   }
@@ -253,15 +237,13 @@ class HomeWidgetState extends State<HomeWidget> with WidgetsBindingObserver {
         if (didPop) return;
         if (!Platform.isAndroid) {
           SystemNavigator.pop();
+          return;
         }
-        if (_exitTimer != null && _exitTimer!.isActive) {
-          _exitTimer!.cancel();
-        }
-        _exitTimer = Timer(const Duration(minutes: 5), () {
-          // 超过五分钟未返回应用，彻底退出应用
+        final minimized = await NativeMethodChannel.instance.minimizeApp();
+
+        if (!minimized) {
           SystemNavigator.pop();
-        });
-        await NativeMethodChannel.instance.minimizeApp();
+        }
       },
       child: Scaffold(
         appBar: AppBar(
