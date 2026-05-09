@@ -33,7 +33,7 @@ enum class AppLogLevel(val priority: Int) {
         companion object {
                 val DEFAULT = OFF
 
-                /** 通过 Int 值查找对应的枚举，用于从 DataStore 恢复状态 如果找不到对应值，默认返回 INFO，防止崩溃 */
+                /** 通过 Int 值查找对应的枚举，用于从 DataStore 恢复状态 如果找不到对应值，默认返回 OFF，防止崩溃 */
                 fun fromPriority(priority: Int): AppLogLevel {
                         return entries.find { it.priority == priority } ?: DEFAULT
                 }
@@ -147,7 +147,7 @@ data class DirectViewId(val viewId: String) : ExtractionStrategy
  *
  * 注意：
  * - 当 useExactMatch = false 且该 RuleDetail 是所在列表中的最后一条规则时， 如果通过 viewId 未找到节点，并且配置了 keywords，
- * 则会退回到关键字查找：返回第一个匹配到关键字的节点文本（或关键字本身）。
+ * 则会退回到关键字查找：仅当页面中存在匹配关键字的节点时，返回该节点文本。
  */
 @Serializable
 @SerialName("ExtractByViewId")
@@ -601,30 +601,68 @@ class ConfigDataStoreManager private constructor(context: Context) {
         ) {
                 try {
                         val jsonString = json.encodeToString(value)
+
+                        // DataStore.edit 本身就是保存操作。
+                        // edit block 正常结束后，DataStore 会自动持久化到磁盘。
                         context.configDataStore.edit { preferences ->
                                 preferences[key] = jsonString
                         }
                 } catch (e: SerializationException) {
-                        // Log
+                        AppLog.e(e) { "配置序列化失败 (Key: ${key.name})" }
+                } catch (e: Exception) {
+                        AppLog.e(e) { "配置保存失败 (Key: ${key.name})" }
                 }
         }
 
-        /** 读取 List<T> 值。若不存在或转换失败，则返回 null。 */
-        private suspend inline fun <reified T> getGenericList(
-                key: Preferences.Key<String>
-        ): List<T>? {
-                val jsonString =
-                        context.configDataStore.data.map { preferences -> preferences[key] }.first()
-                return if (jsonString != null) {
-                        try {
-                                json.decodeFromString<List<T>>(jsonString)
-                        } catch (e: Exception) {
-                                AppLog.e(e) { "配置解析失败 (Key: ${key.name})，JSON: $jsonString" }
-                                null // 解析失败返回 null，让业务层使用默认值
-                        }
-                } else {
-                        null
+        private suspend fun getStringPreference(key: Preferences.Key<String>): String? {
+                return context.configDataStore.data.map { preferences -> preferences[key] }.first()
+        }
+
+        private inline fun <reified T> decodeListOrDefault(
+                jsonString: String?,
+                defaultValue: List<T>,
+                keyName: String
+        ): List<T> {
+                if (jsonString == null) return defaultValue
+
+                return try {
+                        json.decodeFromString<List<T>>(jsonString)
+                } catch (e: Exception) {
+                        AppLog.e(e) { "配置解析失败 (Key: $keyName)，使用默认值。JSON: $jsonString" }
+                        defaultValue
                 }
+        }
+
+        private fun decodeAbPackageConfigOrDefault(jsonString: String?): List<PackageConfigItem> {
+                return decodeListOrDefault(
+                        jsonString = jsonString,
+                        defaultValue = DEFAULT_AB_PACKAGES_CONFIG,
+                        keyName = KEY_AB_PACKAGE_CONFIG.name
+                )
+        }
+
+        private fun decodeNlPackageConfigOrDefault(jsonString: String?): List<PackageConfigItem> {
+                return decodeListOrDefault(
+                        jsonString = jsonString,
+                        defaultValue = DEFAULT_NL_PACKAGES_CONFIG,
+                        keyName = KEY_NL_PACKAGE_CONFIG.name
+                )
+        }
+
+        private fun decodeAllowKeywordsOrDefault(jsonString: String?): List<String> {
+                return decodeListOrDefault(
+                        jsonString = jsonString,
+                        defaultValue = DEFAULT_NL_KEYWORDS,
+                        keyName = KEY_NL_STATIC_KEYWORDS.name
+                )
+        }
+
+        private fun decodeExtractionRulesOrDefault(jsonString: String?): List<ExtractionRule> {
+                return decodeListOrDefault(
+                        jsonString = jsonString,
+                        defaultValue = DEFAULT_AB_EXTRACTION_RULES,
+                        keyName = KEY_AB_EXTRACTION_RULES.name
+                )
         }
 
         /** 删除单个配置项 */
@@ -641,8 +679,7 @@ class ConfigDataStoreManager private constructor(context: Context) {
 
         /** 获取 abAllowPackage 配置 */
         suspend fun getAbAllowPackageConfig(): List<PackageConfigItem> {
-                return getGenericList<PackageConfigItem>(KEY_AB_PACKAGE_CONFIG)
-                        ?: DEFAULT_AB_PACKAGES_CONFIG
+                return decodeAbPackageConfigOrDefault(getStringPreference(KEY_AB_PACKAGE_CONFIG))
         }
 
         /** 设置 abAllowPackage 配置 */
@@ -652,8 +689,7 @@ class ConfigDataStoreManager private constructor(context: Context) {
 
         /** 获取 nlAllowPackage 配置 */
         suspend fun getNlAllowPackageConfig(): List<PackageConfigItem> {
-                return getGenericList<PackageConfigItem>(KEY_NL_PACKAGE_CONFIG)
-                        ?: DEFAULT_NL_PACKAGES_CONFIG
+                return decodeNlPackageConfigOrDefault(getStringPreference(KEY_NL_PACKAGE_CONFIG))
         }
 
         /** 设置 nlAllowPackage 配置 */
@@ -663,7 +699,7 @@ class ConfigDataStoreManager private constructor(context: Context) {
 
         /** 获取允许的关键词列表 */
         suspend fun getAllowKeywords(): List<String> {
-                return getGenericList<String>(KEY_NL_STATIC_KEYWORDS) ?: DEFAULT_NL_KEYWORDS
+                return decodeAllowKeywordsOrDefault(getStringPreference(KEY_NL_STATIC_KEYWORDS))
         }
 
         /** 设置允许的关键词列表 */
@@ -673,8 +709,7 @@ class ConfigDataStoreManager private constructor(context: Context) {
 
         /** 获取提取规则配置 */
         suspend fun getExtractionRules(): List<ExtractionRule> {
-                return getGenericList<ExtractionRule>(KEY_AB_EXTRACTION_RULES)
-                        ?: DEFAULT_AB_EXTRACTION_RULES
+                return decodeExtractionRulesOrDefault(getStringPreference(KEY_AB_EXTRACTION_RULES))
         }
 
         /** 设置提取规则配置 */
@@ -739,20 +774,10 @@ class ConfigDataStoreManager private constructor(context: Context) {
                 context.configDataStore
                         .data
                         .map { preferences ->
-                                val allowedPackagesJson = preferences[KEY_AB_PACKAGE_CONFIG]
                                 val allowedPackages =
-                                        if (allowedPackagesJson != null) {
-                                                try {
-                                                        json.decodeFromString<
-                                                                List<PackageConfigItem>>(
-                                                                allowedPackagesJson
-                                                        )
-                                                } catch (e: Exception) {
-                                                        DEFAULT_AB_PACKAGES_CONFIG
-                                                }
-                                        } else {
-                                                DEFAULT_AB_PACKAGES_CONFIG
-                                        }
+                                        decodeAbPackageConfigOrDefault(
+                                                preferences[KEY_AB_PACKAGE_CONFIG]
+                                        )
 
                                 val allowedPackageNames =
                                         allowedPackages
@@ -760,19 +785,11 @@ class ConfigDataStoreManager private constructor(context: Context) {
                                                 .map { it.packageName }
                                                 .toSet()
 
-                                val rulesJson = preferences[KEY_AB_EXTRACTION_RULES]
                                 val rulesList =
-                                        if (rulesJson != null) {
-                                                try {
-                                                        json.decodeFromString<List<ExtractionRule>>(
-                                                                rulesJson
-                                                        )
-                                                } catch (e: Exception) {
-                                                        DEFAULT_AB_EXTRACTION_RULES
-                                                }
-                                        } else {
-                                                DEFAULT_AB_EXTRACTION_RULES
-                                        }
+                                        decodeExtractionRulesOrDefault(
+                                                preferences[KEY_AB_EXTRACTION_RULES]
+                                        )
+
                                 val rulesMap = rulesList.groupBy { it.packageName }
 
                                 val winDebounce =
@@ -784,6 +801,7 @@ class ConfigDataStoreManager private constructor(context: Context) {
                                 val enableContent =
                                         preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE]
                                                 ?: DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE
+
                                 ServiceConfig(
                                         allowedPackageNames = allowedPackageNames,
                                         extractionRules = rulesMap,
@@ -798,20 +816,10 @@ class ConfigDataStoreManager private constructor(context: Context) {
                 context.configDataStore
                         .data
                         .map { preferences ->
-                                val allowedPackagesJson = preferences[KEY_NL_PACKAGE_CONFIG]
                                 val allowedPackagesList =
-                                        if (allowedPackagesJson != null) {
-                                                try {
-                                                        json.decodeFromString<
-                                                                List<PackageConfigItem>>(
-                                                                allowedPackagesJson
-                                                        )
-                                                } catch (e: Exception) {
-                                                        DEFAULT_NL_PACKAGES_CONFIG
-                                                }
-                                        } else {
-                                                DEFAULT_NL_PACKAGES_CONFIG
-                                        }
+                                        decodeNlPackageConfigOrDefault(
+                                                preferences[KEY_NL_PACKAGE_CONFIG]
+                                        )
 
                                 val allowedPackageSet =
                                         allowedPackagesList
@@ -819,19 +827,10 @@ class ConfigDataStoreManager private constructor(context: Context) {
                                                 .map { it.packageName }
                                                 .toSet()
 
-                                val keywordsJson = preferences[KEY_NL_STATIC_KEYWORDS]
                                 val keywordsList =
-                                        if (keywordsJson != null) {
-                                                try {
-                                                        json.decodeFromString<List<String>>(
-                                                                keywordsJson
-                                                        )
-                                                } catch (e: Exception) {
-                                                        DEFAULT_NL_KEYWORDS
-                                                }
-                                        } else {
-                                                DEFAULT_NL_KEYWORDS
-                                        }
+                                        decodeAllowKeywordsOrDefault(
+                                                preferences[KEY_NL_STATIC_KEYWORDS]
+                                        )
 
                                 NotificationConfig(allowedPackageSet, keywordsList)
                         }

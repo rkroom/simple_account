@@ -105,6 +105,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private val pageTriggerCounts = ConcurrentHashMap<PageIdentifier, Int>()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var configObserveJob: Job? = null
     @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
     @Volatile private var cachedExtractionRules: Map<String, List<ExtractionRule>> = emptyMap()
     private val windowChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
@@ -129,31 +130,39 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     private fun observeServiceConfig() {
-        serviceScope.launch {
-            val configManager = ConfigDataStoreManager.getInstance(applicationContext)
+        configObserveJob?.cancel("Restart service config observer")
 
-            // 监听 Flow
-            configManager.serviceConfigFlow.collect { config ->
-                AppLog.d { "配置发生变更，正在刷新 Service 缓存..." }
+        configObserveJob =
+                serviceScope.launch {
+                    val configManager = ConfigDataStoreManager.getInstance(applicationContext)
 
-                cachedAllowedPackageNames = config.allowedPackageNames
-                cachedExtractionRules = config.extractionRules
-                windowChangeDebounceMs = config.windowChangeDebounceMs
-                contentChangeDebounceMs = config.contentChangeDebounceMs
-                isContentChangeEnabled = config.isContentChangeEnabled
+                    // 监听 Flow
+                    configManager.serviceConfigFlow.collect { config ->
+                        AppLog.d { "配置发生变更，正在刷新 Service 缓存..." }
 
-                // 清空规则查找缓存，因为规则可能变了
-                evictAllRuleBundles()
+                        cachedAllowedPackageNames = config.allowedPackageNames
+                        cachedExtractionRules = config.extractionRules
+                        windowChangeDebounceMs = config.windowChangeDebounceMs
+                        contentChangeDebounceMs = config.contentChangeDebounceMs
+                        isContentChangeEnabled = config.isContentChangeEnabled
 
-                // 清空页面缓存，避免“已完成”的旧状态影响新规则
-                evictAllLastCacheEntries()
+                        // 清空规则查找缓存，因为规则可能变了
+                        evictAllRuleBundles()
 
-                // 更新 ServiceInfo (必须在主线程执行)
-                withContext(Dispatchers.Main) { updateServiceInfo(config) }
+                        // 清空页面缓存，避免“已完成”的旧状态影响新规则
+                        evictAllLastCacheEntries()
 
-                AppLog.i { "配置刷新完成。监听包数量: ${config.allowedPackageNames.size}" }
-            }
-        }
+                        // 配置变更时取消旧的防抖任务，避免旧规则延迟后继续写库
+                        cancelAndClearJobs(windowChangeDebounceJobs, "Config changed")
+                        cancelAndClearJobs(contentChangeDebounceJobs, "Config changed")
+                        pageTriggerCounts.clear()
+
+                        // 更新 ServiceInfo (必须在主线程执行)
+                        withContext(Dispatchers.Main) { updateServiceInfo(config) }
+
+                        AppLog.i { "配置刷新完成。监听包数量: ${config.allowedPackageNames.size}" }
+                    }
+                }
     }
 
     private fun updateServiceInfo(config: ServiceConfig) {
@@ -186,10 +195,15 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
+        val allowedPackages = cachedAllowedPackageNames
+        if (allowedPackages.isEmpty() || packageName !in allowedPackages) {
+            return
+        }
         val eventType = event.eventType
         val eventWindowId = event.windowId
 
         if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val previousWindowId = currentWindowId
             currentWindowId = eventWindowId
 
             val className = event.className?.toString() ?: AppConstants.UNKNOWN_CLASS
@@ -206,7 +220,7 @@ class MyAccessibilityService : AccessibilityService() {
 
             //  在事件发生时捕获 targetWindowId
             val targetWindowId = eventWindowId
-            handleWindowStateChanged(newPageId, targetWindowId)
+            handleWindowStateChanged(newPageId, targetWindowId, previousWindowId)
         } else if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             if (eventWindowId != currentWindowId) {
                 return
@@ -379,11 +393,18 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     // 如遇线程问题导致的崩溃，可考虑在防抖结束之后切换到主线程生成节点快照，然后在后台线程处理
-    private fun handleWindowStateChanged(newPageId: PageIdentifier, targetWindowId: Int) {
+    private fun handleWindowStateChanged(
+            newPageId: PageIdentifier,
+            targetWindowId: Int,
+            previousWindowId: Int
+    ) {
         val oldPageId = currentPageId
+        val isPageChanged = oldPageId != null && oldPageId != newPageId
+        val isWindowChanged = previousWindowId != targetWindowId
+
         currentPageId = newPageId
 
-        if (oldPageId != null && oldPageId != newPageId) {
+        if (isPageChanged) {
             windowChangeDebounceJobs[oldPageId]?.cancel("Page changed")
             windowChangeDebounceJobs.remove(oldPageId)
 
@@ -391,9 +412,16 @@ class MyAccessibilityService : AccessibilityService() {
             contentChangeDebounceJobs.remove(oldPageId)
 
             pageTriggerCounts.remove(oldPageId)
+        } else if (oldPageId == newPageId && isWindowChanged) {
+            // 同一个 Activity 进入新窗口时，取消旧窗口遗留的 ContentChange 防抖任务
+            contentChangeDebounceJobs[newPageId]?.cancel("Window changed")
+            contentChangeDebounceJobs.remove(newPageId)
         }
 
-        pageTriggerCounts[newPageId] = 0
+        // 只有页面变化、窗口变化或首次进入时才重置触发次数，避免重复 WindowState 重置计数
+        if (oldPageId == null || isPageChanged || isWindowChanged) {
+            pageTriggerCounts[newPageId] = 0
+        }
 
         contentChangeDebounceJobs[newPageId]?.let { job ->
             if (job.isActive) {
@@ -439,7 +467,14 @@ class MyAccessibilityService : AccessibilityService() {
                                             null
                                         }
                                     }
-                                            ?: return@launch
+
+                            if (root == null) {
+                                AppLog.v {
+                                    "[$TAG] WindowState: 第 ${attempt + 1} 次尝试 root 为空，继续重试。"
+                                }
+                                attempt++
+                                continue
+                            }
 
                             val currentWindowId = root.windowId
                             val nodeProvider =
@@ -603,7 +638,8 @@ class MyAccessibilityService : AccessibilityService() {
                 serviceScope.launch {
                     try {
                         delay(contentChangeDebounceMs)
-                        if (currentPageId != pageId) return@launch
+                        if (currentPageId != pageId || currentWindowId != targetWindowId)
+                                return@launch
 
                         val root =
                                 withContext(Dispatchers.Main) {
@@ -725,26 +761,28 @@ class MyAccessibilityService : AccessibilityService() {
         var logReason = ""
 
         val currentTime = System.currentTimeMillis()
-        val cacheTimestamp = lastEntry?.timestamp ?: currentTime
+        var targetTimestamp = currentTime
 
         if (lastEntry == null) {
             // 首次出现该页面
             shouldSave = true
+            targetTimestamp = currentTime
             logReason = "New(无缓存)"
         } else {
             if (lastEntry.windowId != currentWindowId) {
                 // 同一 PageIdentifier 但 WindowID 变了，视为新页面
                 shouldSave = true
+                targetTimestamp = currentTime
                 logReason = "New(WinID变动: ${lastEntry.windowId}->${currentWindowId})"
             } else {
                 if (lastEntry.isComplete) {
-                    // 已经有“完整记录”，直接跳过
                     AppLog.v { "Window($currentWindowId) 已标记为完整，跳过。" }
                     return
                 } else {
-                    // 未完成，复用旧 recordId 做更新
+                    // 未完成，复用旧 recordId 做更新，同时保留第一次缓存时间
                     shouldSave = true
                     targetRecordId = lastEntry.recordId
+                    targetTimestamp = lastEntry.timestamp
                     logReason =
                             if (isCurrentDataComplete) {
                                 "Update(数据补全)"
@@ -763,7 +801,7 @@ class MyAccessibilityService : AccessibilityService() {
                             windowId = currentWindowId,
                             isComplete = isCurrentDataComplete,
                             recordId = targetRecordId,
-                            timestamp = cacheTimestamp,
+                            timestamp = targetTimestamp,
                             lastEmptyTriggerTime = newTriggerTime,
                             lastContent = mergedContent,
                             lastPayment = mergedPayment
@@ -774,7 +812,13 @@ class MyAccessibilityService : AccessibilityService() {
                 AppLog.i {
                     "写入数据库 [$logReason]: ID=$targetRecordId, Win=$currentWindowId, 完整=$isCurrentDataComplete"
                 }
-                saveData(pageIdentifier, mergedContent, mergedPayment, targetRecordId, currentTime)
+                saveData(
+                        pageIdentifier,
+                        mergedContent,
+                        mergedPayment,
+                        targetRecordId,
+                        targetTimestamp
+                )
             }
         }
     }

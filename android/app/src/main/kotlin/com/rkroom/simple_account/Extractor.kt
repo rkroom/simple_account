@@ -67,7 +67,7 @@ object Extractor {
                         return@withContext extractFastPath(root, matchedRule)
                     }
                 }
-                //LazyDFS 通道
+                // LazyDFS 通道
                 val nodeProvider = sharedProvider ?: LazyNodeProvider(root)
                 val needRecycleProvider = (sharedProvider == null)
                 AppLog.d { "[$TAG][Rule=${matchedRule.ruleName}] 进入常规通道 (Lazy DFS)" }
@@ -248,7 +248,18 @@ object Extractor {
         return rule.contentRules.all { isStrategyEligible(it.strategy) } &&
                 rule.paymentRules.all { isStrategyEligible(it.strategy) }
     }
-
+    /**
+     * FastPath：系统 API 快速提取通道。
+     *
+     * 仅支持以下简单策略：
+     * - DirectViewId
+     * - ExtractByViewId(useExactMatch = true)
+     * - SimpleOffset(offset = 0, useExactMatch = false)
+     *
+     * FastPath 不遍历整棵节点树，不支持 offset、条件判断、文本拼接、 非精准 ViewId 后缀匹配，也不负责 LazyDFS 通道中的复杂失败语义。
+     *
+     * 特别注意： FastPath 不处理“Content 关键字出现但目标值提取失败时生成空账单”的逻辑。 对于依赖该语义的规则，应让规则走 LazyDFS。
+     */
     private fun extractFastPath(
             root: AccessibilityNodeInfo,
             rule: ExtractionRule
@@ -358,8 +369,17 @@ object Extractor {
                 }
 
                 if (!strategy.useExactMatch && isLastRule && hasKeywords && isFinalAttempt) {
-                    AppLog.w { "[$TAG][$tagPrefix] ID 未命中，触发关键词兜底" }
+                    val fallbackNode = provider.findFirst { isMatch(it) }
+
+                    if (fallbackNode != null) {
+                        val fallbackText = fallbackNode.text
+                        if (fallbackText.isNotBlank()) {
+                            AppLog.w { "[$TAG][$tagPrefix] ID 未命中，关键词兜底 -> $fallbackText" }
+                            return fallbackText
+                        }
+                    }
                 }
+
                 null
             }
             is SimpleOffset, is ConditionalOffset, is Concatenate -> {
