@@ -147,6 +147,118 @@ Future<CascadeSelectorResult<T>?> showCascadeSelectorSheet<T>({
   );
 }
 
+/// 选择器按钮文字：根据可用宽度动态缩小字号。
+///
+/// 最大字号采用当前 DefaultTextStyle / Theme 的默认字号，不固定写死。
+/// 文字过长时自动缩小到 _minFontSize。
+/// 如果缩小到 _minFontSize 后仍然放不下，才显示省略号。
+class AdaptiveSelectorLabel extends StatelessWidget {
+  static const double _minFontSize = 10;
+
+  final String text;
+  final bool selected;
+
+  const AdaptiveSelectorLabel({
+    super.key,
+    required this.text,
+    required this.selected,
+  });
+
+  double _measureTextWidth({
+    required BuildContext context,
+    required String text,
+    required TextStyle style,
+    required double fontSize,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      maxLines: 1,
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout(maxWidth: double.infinity);
+
+    return painter.width;
+  }
+
+  double _calculateFontSize({
+    required BuildContext context,
+    required double maxWidth,
+    required TextStyle style,
+    required double maxFontSize,
+  }) {
+    if (maxWidth <= 0 || maxWidth.isInfinite) {
+      return maxFontSize;
+    }
+
+    final maxTextWidth = _measureTextWidth(
+      context: context,
+      text: text,
+      style: style,
+      fontSize: maxFontSize,
+    );
+
+    if (maxTextWidth <= maxWidth) {
+      return maxFontSize;
+    }
+
+    double low = _minFontSize;
+    double high = maxFontSize;
+
+    for (int i = 0; i < 8; i++) {
+      final mid = (low + high) / 2;
+      final width = _measureTextWidth(
+        context: context,
+        text: text,
+        style: style,
+        fontSize: mid,
+      );
+
+      if (width <= maxWidth) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+
+    return low;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final defaultStyle = DefaultTextStyle.of(context).style;
+
+    final maxFontSize =
+        defaultStyle.fontSize ??
+        Theme.of(context).textTheme.bodyMedium?.fontSize ??
+        14;
+
+    final baseStyle = defaultStyle.copyWith(
+      color: selected ? Colors.white : Colors.black87,
+      fontWeight: FontWeight.w500,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final fontSize = _calculateFontSize(
+          context: context,
+          maxWidth: constraints.maxWidth,
+          style: baseStyle,
+          maxFontSize: maxFontSize,
+        );
+
+        return Text(
+          text,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: baseStyle.copyWith(fontSize: fontSize),
+        );
+      },
+    );
+  }
+}
+
 class GridSelectorSheet<T> extends StatefulWidget {
   final String title;
   final List<SelectorOption<T>> options;
@@ -170,20 +282,23 @@ class _GridSelectorSheetState<T> extends State<GridSelectorSheet<T>> {
   static const int _crossAxisCount = 3;
   static const double _mainAxisSpacing = 12;
   static const double _crossAxisSpacing = 12;
-  static const double _childAspectRatio = 2.4;
+  static const double _childAspectRatio = 2.5;
 
   static const double _horizontalPadding = 16;
   static const double _verticalPadding = 16;
+  static const double _scrollbarReservedWidth = 12;
 
   static const double _headerHeight = 58;
   static const double _dividerHeight = 1;
   static const double _sheetMaxHeightRatio = 0.70;
 
   late int selectedIndex;
+  final ScrollController _gridScrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
+
     if (widget.options.isEmpty) {
       selectedIndex = 0;
       return;
@@ -192,6 +307,12 @@ class _GridSelectorSheetState<T> extends State<GridSelectorSheet<T>> {
     final initIndex = widget.initialSelectedIndex ?? 0;
     selectedIndex =
         (initIndex >= 0 && initIndex < widget.options.length) ? initIndex : 0;
+  }
+
+  @override
+  void dispose() {
+    _gridScrollController.dispose();
+    super.dispose();
   }
 
   void _confirmCurrent() {
@@ -208,6 +329,7 @@ class _GridSelectorSheetState<T> extends State<GridSelectorSheet<T>> {
 
   void _confirmSelection(int index) {
     if (index < 0 || index >= widget.options.length) return;
+
     selectedIndex = index;
     _confirmCurrent();
   }
@@ -323,67 +445,73 @@ class _GridSelectorSheetState<T> extends State<GridSelectorSheet<T>> {
                 child:
                     widget.options.isEmpty
                         ? const Center(child: Text("暂无数据"))
-                        : GridView.builder(
-                          shrinkWrap: !layout.gridScrollable,
-                          physics:
-                              layout.gridScrollable
-                                  ? const BouncingScrollPhysics()
-                                  : const NeverScrollableScrollPhysics(),
-                          itemCount: widget.options.length,
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: _crossAxisCount,
-                                mainAxisSpacing: _mainAxisSpacing,
-                                crossAxisSpacing: _crossAxisSpacing,
-                                childAspectRatio: _childAspectRatio,
-                              ),
-                          itemBuilder: (context, index) {
-                            final selected = index == selectedIndex;
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  selectedIndex = index;
-                                });
-                                _confirmSelection(index);
-                              },
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color:
-                                      selected
-                                          ? Colors.blue
-                                          : Colors.grey.shade100,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
+                        : Scrollbar(
+                          controller: _gridScrollController,
+                          thumbVisibility: layout.gridScrollable,
+                          trackVisibility: layout.gridScrollable,
+                          interactive: true,
+                          radius: const Radius.circular(8),
+                          child: GridView.builder(
+                            controller: _gridScrollController,
+                            padding:
+                                layout.gridScrollable
+                                    ? const EdgeInsets.only(
+                                      right: _scrollbarReservedWidth,
+                                    )
+                                    : EdgeInsets.zero,
+                            shrinkWrap: !layout.gridScrollable,
+                            physics:
+                                layout.gridScrollable
+                                    ? const BouncingScrollPhysics()
+                                    : const NeverScrollableScrollPhysics(),
+                            itemCount: widget.options.length,
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: _crossAxisCount,
+                                  mainAxisSpacing: _mainAxisSpacing,
+                                  crossAxisSpacing: _crossAxisSpacing,
+                                  childAspectRatio: _childAspectRatio,
+                                ),
+                            itemBuilder: (context, index) {
+                              final selected = index == selectedIndex;
+
+                              return GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    selectedIndex = index;
+                                  });
+                                  _confirmSelection(index);
+                                },
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
                                     color:
                                         selected
                                             ? Colors.blue
-                                            : Colors.grey.shade300,
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                  child: Text(
-                                    widget.options[index].label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
+                                            : Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
                                       color:
                                           selected
-                                              ? Colors.white
-                                              : Colors.black87,
-                                      fontWeight: FontWeight.w500,
+                                              ? Colors.blue
+                                              : Colors.grey.shade300,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                    ),
+                                    child: AdaptiveSelectorLabel(
+                                      text: widget.options[index].label,
+                                      selected: selected,
                                     ),
                                   ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
               ),
             ),
@@ -418,12 +546,13 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
   static const int _crossAxisCount = 3;
   static const double _mainAxisSpacing = 12;
   static const double _crossAxisSpacing = 12;
-  static const double _childAspectRatio = 2.4;
+  static const double _childAspectRatio = 2.5;
 
   static const double _horizontalPadding = 16;
   static const double _parentTopPadding = 16;
   static const double _parentBottomPadding = 8;
   static const double _childVerticalPadding = 16;
+  static const double _scrollbarReservedWidth = 12;
 
   static const double _headerHeight = 58;
   static const double _dividerHeight = 1;
@@ -434,6 +563,9 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
 
   late int parentIndex;
   late int childIndex;
+
+  final ScrollController _parentScrollController = ScrollController();
+  final ScrollController _childScrollController = ScrollController();
 
   @override
   void initState() {
@@ -448,11 +580,19 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
 
       if (p >= 0 && p < widget.groups.length) {
         parentIndex = p;
+
         if (c >= 0 && c < widget.groups[parentIndex].children.length) {
           childIndex = c;
         }
       }
     }
+  }
+
+  @override
+  void dispose() {
+    _parentScrollController.dispose();
+    _childScrollController.dispose();
+    super.dispose();
   }
 
   List<SelectorOption<T>> get currentChildren =>
@@ -474,6 +614,7 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
 
   void _confirmChildSelection(int index) {
     if (index < 0 || index >= currentChildren.length) return;
+
     childIndex = index;
     _confirmCurrentChild();
   }
@@ -629,57 +770,73 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
                   _horizontalPadding,
                   _parentBottomPadding,
                 ),
-                child: GridView.builder(
-                  shrinkWrap: !layout.parentScrollable,
-                  physics:
-                      layout.parentScrollable
-                          ? const BouncingScrollPhysics()
-                          : const NeverScrollableScrollPhysics(),
-                  itemCount: widget.groups.length,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: _crossAxisCount,
-                    mainAxisSpacing: _mainAxisSpacing,
-                    crossAxisSpacing: _crossAxisSpacing,
-                    childAspectRatio: _childAspectRatio,
-                  ),
-                  itemBuilder: (context, index) {
-                    final isSelected = index == parentIndex;
-                    return GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          parentIndex = index;
-                          childIndex = 0;
-                        });
-                      },
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color:
-                              isSelected ? Colors.blue : Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color:
-                                isSelected ? Colors.blue : Colors.grey.shade300,
-                            width: 1,
-                          ),
+                child: Scrollbar(
+                  controller: _parentScrollController,
+                  thumbVisibility: layout.parentScrollable,
+                  trackVisibility: layout.parentScrollable,
+                  interactive: true,
+                  radius: const Radius.circular(8),
+                  child: GridView.builder(
+                    controller: _parentScrollController,
+                    padding:
+                        layout.parentScrollable
+                            ? const EdgeInsets.only(
+                              right: _scrollbarReservedWidth,
+                            )
+                            : EdgeInsets.zero,
+                    shrinkWrap: !layout.parentScrollable,
+                    physics:
+                        layout.parentScrollable
+                            ? const BouncingScrollPhysics()
+                            : const NeverScrollableScrollPhysics(),
+                    itemCount: widget.groups.length,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: _crossAxisCount,
+                          mainAxisSpacing: _mainAxisSpacing,
+                          crossAxisSpacing: _crossAxisSpacing,
+                          childAspectRatio: _childAspectRatio,
                         ),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          child: Text(
-                            widget.groups[index].label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: isSelected ? Colors.white : Colors.black87,
-                              fontWeight: FontWeight.w500,
+                    itemBuilder: (context, index) {
+                      final isSelected = index == parentIndex;
+
+                      return GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            parentIndex = index;
+                            childIndex = 0;
+                          });
+
+                          if (_childScrollController.hasClients) {
+                            _childScrollController.jumpTo(0);
+                          }
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color:
+                                isSelected ? Colors.blue : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color:
+                                  isSelected
+                                      ? Colors.blue
+                                      : Colors.grey.shade300,
+                              width: 1,
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            child: AdaptiveSelectorLabel(
+                              text: widget.groups[index].label,
+                              selected: isSelected,
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
@@ -701,67 +858,73 @@ class _CascadeSelectorSheetState<T> extends State<CascadeSelectorSheet<T>> {
                 child:
                     currentChildren.isEmpty
                         ? const Center(child: Text("暂无子类目"))
-                        : GridView.builder(
-                          shrinkWrap: !layout.childScrollable,
-                          physics:
-                              layout.childScrollable
-                                  ? const BouncingScrollPhysics()
-                                  : const NeverScrollableScrollPhysics(),
-                          itemCount: currentChildren.length,
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: _crossAxisCount,
-                                mainAxisSpacing: _mainAxisSpacing,
-                                crossAxisSpacing: _crossAxisSpacing,
-                                childAspectRatio: _childAspectRatio,
-                              ),
-                          itemBuilder: (context, index) {
-                            final isSelected = index == childIndex;
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  childIndex = index;
-                                });
-                                _confirmChildSelection(index);
-                              },
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color:
-                                      isSelected
-                                          ? Colors.blue
-                                          : Colors.grey.shade100,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
+                        : Scrollbar(
+                          controller: _childScrollController,
+                          thumbVisibility: layout.childScrollable,
+                          trackVisibility: layout.childScrollable,
+                          interactive: true,
+                          radius: const Radius.circular(8),
+                          child: GridView.builder(
+                            controller: _childScrollController,
+                            padding:
+                                layout.childScrollable
+                                    ? const EdgeInsets.only(
+                                      right: _scrollbarReservedWidth,
+                                    )
+                                    : EdgeInsets.zero,
+                            shrinkWrap: !layout.childScrollable,
+                            physics:
+                                layout.childScrollable
+                                    ? const BouncingScrollPhysics()
+                                    : const NeverScrollableScrollPhysics(),
+                            itemCount: currentChildren.length,
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: _crossAxisCount,
+                                  mainAxisSpacing: _mainAxisSpacing,
+                                  crossAxisSpacing: _crossAxisSpacing,
+                                  childAspectRatio: _childAspectRatio,
+                                ),
+                            itemBuilder: (context, index) {
+                              final isSelected = index == childIndex;
+
+                              return GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    childIndex = index;
+                                  });
+                                  _confirmChildSelection(index);
+                                },
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
                                     color:
                                         isSelected
                                             ? Colors.blue
-                                            : Colors.grey.shade300,
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                  child: Text(
-                                    currentChildren[index].label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
+                                            : Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
                                       color:
                                           isSelected
-                                              ? Colors.white
-                                              : Colors.black87,
-                                      fontWeight: FontWeight.w500,
+                                              ? Colors.blue
+                                              : Colors.grey.shade300,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                    ),
+                                    child: AdaptiveSelectorLabel(
+                                      text: currentChildren[index].label,
+                                      selected: isSelected,
                                     ),
                                   ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
               ),
             ),

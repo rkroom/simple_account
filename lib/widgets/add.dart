@@ -25,6 +25,10 @@ class AddWidgetState extends State<AddWidget>
   bool _hasPermission = false;
   int _billCount = 0; // 账单数量
 
+  int _categoryLoadToken = 0;
+  int _accountLoadToken = 0;
+  int _permissionCheckToken = 0;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -44,6 +48,7 @@ class AddWidgetState extends State<AddWidget>
   String showIncomeAccount = "请选择";
   int? incomeAccountId;
   List incomeCategory = [];
+  List<int>? selectedIncomeCategory;
   String showIncomeCategory = "请选择";
   Map incomeCategoryIndex = {};
   int? incomeCategoryId;
@@ -72,72 +77,107 @@ class AddWidgetState extends State<AddWidget>
   DateTime transferTimeSign = DateTime.now();
 
   void initData() async {
+    final categoryToken = ++_categoryLoadToken;
+    final accountToken = ++_accountLoadToken;
+
     // 使用 Future.wait 并行执行所有异步任务
     var results = await Future.wait([
       getCategory("consume"), // 获取消费分类
       getCategory("income"), // 获取收入分类
       getAccount(), // 获取账户信息
     ]);
+
     if (!mounted) return;
+
     // 在所有异步任务完成后，统一更新状态
     setState(() {
-      // 消费分类
+      if (categoryToken == _categoryLoadToken) {
+        // 消费分类
+        consumeCategory = results[0][0];
+        consumeCategoryIndex = results[0][1];
+
+        // 收入分类
+        incomeCategory = results[1][0];
+        incomeCategoryIndex = results[1][1];
+      }
+
+      if (accountToken == _accountLoadToken) {
+        // 账户信息
+        accountName = results[2][0];
+        accountIndex = results[2][1];
+      }
+    });
+  }
+
+  Future<void> _updateCategory(dynamic arg) async {
+    final token = ++_categoryLoadToken;
+
+    final results = await Future.wait([
+      getCategory("consume"),
+      getCategory("income"),
+    ]);
+
+    if (!mounted || token != _categoryLoadToken) return;
+
+    setState(() {
       consumeCategory = results[0][0];
       consumeCategoryIndex = results[0][1];
 
-      // 收入分类
       incomeCategory = results[1][0];
       incomeCategoryIndex = results[1][1];
-
-      // 账户信息
-      accountName = results[2][0];
-      accountIndex = results[2][1];
     });
   }
 
   Future<void> _checkPermissionsAndFetchBills() async {
+    final token = ++_permissionCheckToken;
+
     try {
       final results = await Future.wait([
         NativeMethodChannel.instance.checkAccessibilityPermission(),
         NativeMethodChannel.instance.checkNotificationListenerPermission(),
       ]);
 
+      if (!mounted || token != _permissionCheckToken) return;
+
       final accessibilityPermission = results[0];
       final notificationListenerPermission = results[1];
 
-      if (mounted) {
-        setState(() {
-          _hasPermission =
-              accessibilityPermission || notificationListenerPermission;
-        });
-        if (_hasPermission) {
-          final bills = await BillListenerService().getBills();
-          if (mounted) {
-            setState(() {
-              _billCount = bills.length;
-            });
-          }
-        } else {
-          if (mounted) {
-            setState(() {
-              _billCount = 0;
-            });
-          }
-        }
-      }
-    } catch (e) {
-      if (mounted) {
+      final hasPermission =
+          accessibilityPermission || notificationListenerPermission;
+
+      if (!hasPermission) {
         setState(() {
           _hasPermission = false;
           _billCount = 0;
         });
+        return;
       }
+
+      final bills = await BillListenerService().getBills();
+
+      if (!mounted || token != _permissionCheckToken) return;
+
+      setState(() {
+        _hasPermission = true;
+        _billCount = bills.length;
+      });
+    } catch (e) {
+      if (!mounted || token != _permissionCheckToken) return;
+
+      setState(() {
+        _hasPermission = false;
+        _billCount = 0;
+      });
     }
   }
 
   Future<void> _updateAccount(arg) async {
+    final token = ++_accountLoadToken;
+
     final list = await getAccount();
-    if (!mounted) return;
+
+    if (!mounted || token != _accountLoadToken) return;
+
     setState(() {
       accountName = list[0];
       accountIndex = list[1];
@@ -148,20 +188,7 @@ class AddWidgetState extends State<AddWidget>
   void initState() {
     super.initState();
     initData();
-    bus.on("update_category", (arg) {
-      getCategory("consume").then((list) {
-        setState(() {
-          consumeCategory = list[0];
-          consumeCategoryIndex = list[1];
-        });
-      });
-      getCategory("income").then((list) {
-        setState(() {
-          incomeCategory = list[0];
-          incomeCategoryIndex = list[1];
-        });
-      });
-    });
+    bus.on("update_category", _updateCategory);
 
     bus.on("update_account", _updateAccount);
     _checkPermissionsAndFetchBills(); // 初始调用
@@ -202,7 +229,7 @@ class AddWidgetState extends State<AddWidget>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    bus.off("update_category");
+    bus.off("update_category", _updateCategory);
     bus.off("update_account", _updateAccount);
     super.dispose();
   }
@@ -229,7 +256,10 @@ class AddWidgetState extends State<AddWidget>
             ),
           ),
         ),
-        body: getTabBarPages(),
+        body: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: getTabBarPages(),
+        ),
       ),
     );
   }
@@ -263,6 +293,24 @@ class AddWidgetState extends State<AddWidget>
     });
   }
 
+  incomeAccountQuickSelect(item) {
+    setState(() {
+      showIncomeAccount = item["name"];
+      incomeAccountId = item["id"];
+    });
+  }
+
+  incomeCategoryQuickSelect(item) {
+    setState(() {
+      showIncomeCategory = item["category"];
+      selectedIncomeCategory = findElementIndexes(
+        incomeCategory,
+        item["category"],
+      );
+      incomeCategoryId = item["id"];
+    });
+  }
+
   //支出，收入，转账分别的页面。
   //支出
   Widget consume() {
@@ -270,6 +318,7 @@ class AddWidgetState extends State<AddWidget>
       children: [
         Expanded(
           child: QuickSelect(
+            flow: Transaction.consume.value,
             accountQuickSelect: accountQuickSelect,
             categoryQuickSelect: categoryQuickSelect,
           ),
@@ -351,29 +400,37 @@ class AddWidgetState extends State<AddWidget>
 
   //收入
   Widget income() {
-    return Stack(
-      alignment: Alignment.bottomCenter,
+    return Column(
       children: [
-        Positioned(
-          bottom: 20,
-          child: Transactions(
-            flow: Transaction.income,
-            accountNames: accountName,
-            accountIndexs: accountIndex,
-            categoryIndex: incomeCategoryIndex,
-            categories: incomeCategory,
-            time: incomeWhenTime,
-            accountText: showIncomeAccount,
-            accountId: incomeAccountId,
-            categoryText: showIncomeCategory,
-            categoryId: incomeCategoryId,
-            onTimeChanged: (time) {
-              setState(() {
-                incomeWhenTime = time;
-              });
-              incomeTimeSign = DateTime.now();
-            },
+        Expanded(
+          child: QuickSelect(
+            flow: Transaction.income.value,
+            accountQuickSelect: incomeAccountQuickSelect,
+            categoryQuickSelect: incomeCategoryQuickSelect,
           ),
+        ),
+        Stack(
+          children: [
+            Transactions(
+              flow: Transaction.income,
+              accountNames: accountName,
+              accountIndexs: accountIndex,
+              categoryIndex: incomeCategoryIndex,
+              categories: incomeCategory,
+              time: incomeWhenTime,
+              accountText: showIncomeAccount,
+              accountId: incomeAccountId,
+              categoryText: showIncomeCategory,
+              categoryId: incomeCategoryId,
+              selectedCategory: selectedIncomeCategory,
+              onTimeChanged: (time) {
+                setState(() {
+                  incomeWhenTime = time;
+                });
+                incomeTimeSign = DateTime.now();
+              },
+            ),
+          ],
         ),
       ],
     );
@@ -416,7 +473,7 @@ class AddWidgetState extends State<AddWidget>
                 formData.outAccountId,
                 formData.inAccountId,
                 formData.comment,
-                formData.whenTime,
+                formData.time,
               );
             },
           ),

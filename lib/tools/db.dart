@@ -300,52 +300,80 @@ class DB {
     int interval = -30,
     int limit = 6,
   }) async {
-    var db = await database;
+    final db = await database;
+
     return db.rawQuery(
-      """WITH MaxDate as(
-      SELECT max(when_time) as max_wt
-       FROM books_account_book
-       WHERE flow = ?
-     ),
-       TopValues as (
-       SELECT types_id
-       FROM books_account_book
-       WHERE flow = ?
-       AND when_time >= (SELECT date(max_wt, ?) FROM MaxDate)
-       GROUP BY types_id
-       ORDER BY COUNT(*) DESC
-       LIMIT ?)
-  SELECT s.specific_category category,s.id,s.parent_category_id pid
-  from books_account_category_specific s
-  JOIN TopValues t on s.id = t.types_id""",
-      [flow, flow, "$interval days", limit],
+      """
+    WITH MaxDate AS (
+      SELECT MAX(when_time) AS max_wt
+      FROM books_account_book
+      WHERE flow = ?
+    ),
+    TopValues AS (
+      SELECT
+        types_id,
+        COUNT(*) AS use_count,
+        MAX(when_time) AS last_used_time
+      FROM books_account_book
+      WHERE flow = ?
+        AND types_id IS NOT NULL
+        AND when_time >= (SELECT datetime(max_wt, ?) FROM MaxDate)
+      GROUP BY types_id
+      ORDER BY use_count DESC, last_used_time DESC
+      LIMIT ?
+    )
+    SELECT
+      s.specific_category AS category,
+      s.id,
+      s.parent_category_id AS pid
+    FROM TopValues t
+    JOIN books_account_category_specific s
+      ON s.id = t.types_id
+    JOIN books_account_category_first f
+      ON f.id = s.parent_category_id
+    WHERE f.flow_sign = ?
+    ORDER BY t.use_count DESC, t.last_used_time DESC
+    """,
+      [flow, flow, "$interval days", limit, flow],
     );
   }
 
   //根据时间获取最常用账户
-  Future getMostFrequentAccount(
+  Future<List> getMostFrequentAccount(
     String flow, {
     int interval = -30,
     int limit = 6,
   }) async {
-    var db = await database;
+    final db = await database;
+
     return db.rawQuery(
-      """WITH MaxDate as(
-    SELECT max(when_time) as max_wt
-     FROM books_account_book
-     WHERE flow = ?
-	 ),
-     TopValues as (
-     SELECT account_info_id
-     FROM books_account_book
-     WHERE flow = ?
-     AND when_time >= (SELECT date(max_wt, ?) FROM MaxDate)
-     GROUP BY account_info_id
-     ORDER BY COUNT(*) DESC
-     LIMIT ?)
-SELECT a.name,a.id
-from books_account_info a
-JOIN TopValues t on a.id = t.account_info_id""",
+      """
+    WITH MaxDate AS (
+      SELECT MAX(when_time) AS max_wt
+      FROM books_account_book
+      WHERE flow = ?
+    ),
+    TopValues AS (
+      SELECT
+        account_info_id,
+        COUNT(*) AS use_count,
+        MAX(when_time) AS last_used_time
+      FROM books_account_book
+      WHERE flow = ?
+        AND account_info_id IS NOT NULL
+        AND when_time >= (SELECT datetime(max_wt, ?) FROM MaxDate)
+      GROUP BY account_info_id
+      ORDER BY use_count DESC, last_used_time DESC
+      LIMIT ?
+    )
+    SELECT
+      a.name,
+      a.id
+    FROM TopValues t
+    JOIN books_account_info a
+      ON a.id = t.account_info_id
+    ORDER BY t.use_count DESC, t.last_used_time DESC
+    """,
       [flow, flow, "$interval days", limit],
     );
   }
@@ -372,7 +400,14 @@ JOIN TopValues t on a.id = t.account_info_id""",
     var db = await database;
     return db.rawInsert(
       "INSERT INTO books_account_book(types_id,flow,detailed,account_info_id,comment,when_time) values (?,?,?,?,?,?)",
-      [category, flow, detailed, account, comment, time.substring(0, 19)],
+      [
+        category,
+        flow,
+        detailed,
+        account,
+        comment,
+        _normalizeSqliteDateTime(time),
+      ],
     );
   }
 
@@ -387,7 +422,7 @@ JOIN TopValues t on a.id = t.account_info_id""",
         account,
         aimAccount,
         comment,
-        when.substring(0, 19),
+        _normalizeSqliteDateTime(when),
       ],
     );
   }

@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../tools/db.dart';
 
 class QuickSelect extends StatefulWidget {
+  final String flow;
   final void Function(dynamic item) accountQuickSelect;
   final void Function(dynamic item) categoryQuickSelect;
 
   const QuickSelect({
     super.key,
+    this.flow = 'consume',
     required this.accountQuickSelect,
     required this.categoryQuickSelect,
   });
@@ -19,17 +21,27 @@ class QuickSelect extends StatefulWidget {
 }
 
 class QuickSelectState extends State<QuickSelect> {
+  static const int _fixedItemCount = 6;
+
   List<Map<String, dynamic>> categoryArray = [];
   List<Map<String, dynamic>> accountArray = [];
+  int _loadToken = 0;
 
-  void initData() async {
+  Future<void> initData() async {
+    final currentFlow = widget.flow;
+    final token = ++_loadToken;
+
     final results = await Future.wait([
-      DB().getMostFrequentType("consume"),
-      DB().getMostFrequentAccount("consume"),
+      DB().getMostFrequentType(currentFlow),
+      DB().getMostFrequentAccount(currentFlow),
     ]);
-    categoryArray = results[0] as List<Map<String, dynamic>>;
-    accountArray = results[1];
-    setState(() {});
+
+    if (!mounted || token != _loadToken || widget.flow != currentFlow) return;
+
+    setState(() {
+      categoryArray = List<Map<String, dynamic>>.from(results[0]);
+      accountArray = List<Map<String, dynamic>>.from(results[1]);
+    });
   }
 
   @override
@@ -39,53 +51,84 @@ class QuickSelectState extends State<QuickSelect> {
   }
 
   @override
+  void didUpdateWidget(covariant QuickSelect oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.flow != widget.flow) {
+      initData();
+    }
+  }
+
+  Widget _buildPlaceholderButton() {
+    return Visibility(
+      visible: false,
+      maintainSize: true,
+      maintainAnimation: true,
+      maintainState: true,
+      child: ElevatedButton(
+        onPressed: null,
+        style: ElevatedButton.styleFrom(
+          padding: EdgeInsets.zero,
+          textStyle: const TextStyle(fontSize: 13),
+        ),
+        child: const Text(''),
+      ),
+    );
+  }
+
+  Widget _buildGrid({
+    required List<Map<String, dynamic>> items,
+    required String textKey,
+    required void Function(dynamic item) onPressed,
+  }) {
+    return GridView.count(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 3,
+      crossAxisSpacing: 8.0,
+      mainAxisSpacing: 8.0,
+      childAspectRatio: 2,
+      children: List.generate(_fixedItemCount, (index) {
+        if (index >= items.length) {
+          return _buildPlaceholderButton();
+        }
+        final item = items[index];
+
+        return ElevatedButton(
+          onPressed: () => onPressed(item),
+          style: ElevatedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            textStyle: const TextStyle(fontSize: 13),
+          ),
+          child: Text(
+            '${item[textKey] ?? ''}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        );
+      }),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
-          child: GridView.count(
-            crossAxisCount: 3, // 每行的按钮数量，可以调整为你需要的数量
-            crossAxisSpacing: 8.0, // 横向间距
-            mainAxisSpacing: 8.0, // 纵向间距
-            childAspectRatio: 2, // 宽高比
-            children:
-                categoryArray.map((item) {
-                  return Container(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 3.0,
-                      vertical: 5.0,
-                    ), // 添加间距
-                    child: ElevatedButton(
-                      onPressed: () {
-                        widget.categoryQuickSelect(item);
-                      },
-                      child: Text(' ${item['category']}'),
-                    ),
-                  );
-                }).toList(),
+          child: _buildGrid(
+            items: categoryArray,
+            textKey: 'category',
+            onPressed: widget.categoryQuickSelect,
           ),
         ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 5, horizontal: 6),
+          child: Divider(height: 1, thickness: 1, color: Colors.black26),
+        ),
         Expanded(
-          child: GridView.count(
-            crossAxisCount: 3, // 每行的按钮数量，可以调整为你需要的数量
-            crossAxisSpacing: 8.0, // 横向间距
-            mainAxisSpacing: 8.0, // 纵向间距
-            childAspectRatio: 2, // 宽高比
-            children:
-                accountArray.map((item) {
-                  return Container(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 3.0,
-                      vertical: 5.0,
-                    ), // 添加间距
-                    child: ElevatedButton(
-                      onPressed: () {
-                        widget.accountQuickSelect(item);
-                      },
-                      child: Text(' ${item['name']}'),
-                    ),
-                  );
-                }).toList(),
+          child: _buildGrid(
+            items: accountArray,
+            textKey: 'name',
+            onPressed: widget.accountQuickSelect,
           ),
         ),
       ],

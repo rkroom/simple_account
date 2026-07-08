@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
@@ -36,8 +38,11 @@ class Transactions extends StatefulWidget {
   final int? accountId;
   final String categoryText;
   final int? categoryId;
-  final void Function(bool success)? addSuccess;
+  final FutureOr<void> Function(bool success)? addSuccess;
   final void Function(String value)? onAmountChanged;
+
+  /// 备注变化回调，用于父组件保存备注状态，避免表单重建时丢失备注。
+  final void Function(String value)? onCommentChanged;
   final void Function(Map category)? onCategoryConfirm;
   final void Function(Map account)? onAccountConfirm;
   final void Function(DateTime time)? onTimeChanged;
@@ -68,6 +73,7 @@ class Transactions extends StatefulWidget {
     required this.categoryId,
     this.addSuccess,
     this.onAmountChanged,
+    this.onCommentChanged,
     this.onCategoryConfirm,
     this.onAccountConfirm,
     this.onTimeChanged,
@@ -84,7 +90,6 @@ class Transactions extends StatefulWidget {
 
 class TransactionsState extends State<Transactions> {
   static const TextScaler customTextScaler = TextScaler.linear(1.2);
-
   late TextEditingController _amountController;
   late TextEditingController _commentController;
   final FocusNode _blankFocusNode = FocusNode();
@@ -131,18 +136,23 @@ class TransactionsState extends State<Transactions> {
     if (oldWidget.accountText != widget.accountText) {
       showAccount = widget.accountText;
     }
+
     if (oldWidget.accountId != widget.accountId) {
       accountId = widget.accountId;
     }
+
     if (oldWidget.selectedCategory != widget.selectedCategory) {
       selectedCategory = widget.selectedCategory;
     }
+
     if (oldWidget.categoryText != widget.categoryText) {
       showCategory = widget.categoryText;
     }
+
     if (oldWidget.categoryId != widget.categoryId) {
       categoryId = widget.categoryId;
     }
+
     if (oldWidget.time != widget.time) {
       whenTime = widget.time;
     }
@@ -263,30 +273,32 @@ class TransactionsState extends State<Transactions> {
   }
 
   Future<void> _handleSubmit() async {
+    if (_isSubmitting) return;
+
     final amountText = _amountController.text.trim();
     final amount = double.tryParse(amountText);
 
     if (amountText.isEmpty) {
       showNoticeSnackBar(context, "金额不能为空");
-      widget.addSuccess?.call(false);
+      await widget.addSuccess?.call(false);
       return;
     }
 
     if (amount == null || amount < 0) {
       showNoticeSnackBar(context, "请输入正确的金额");
-      widget.addSuccess?.call(false);
+      await widget.addSuccess?.call(false);
       return;
     }
 
     if (categoryId == null) {
       showNoticeSnackBar(context, "请选择类目");
-      widget.addSuccess?.call(false);
+      await widget.addSuccess?.call(false);
       return;
     }
 
     if (accountId == null) {
       showNoticeSnackBar(context, "请选择账户");
-      widget.addSuccess?.call(false);
+      await widget.addSuccess?.call(false);
       return;
     }
 
@@ -295,11 +307,13 @@ class TransactionsState extends State<Transactions> {
     });
 
     try {
+      final commentText = _commentController.text.trim();
+
       final payload = TransactionFormData(
         amount: amountText,
         categoryId: categoryId!,
         accountId: accountId!,
-        comment: _commentController.text.trim(),
+        comment: commentText,
         whenTime: whenTime,
       );
 
@@ -311,8 +325,8 @@ class TransactionsState extends State<Transactions> {
           widget.flow.value,
           amountText,
           accountId!,
-          _commentController.text.trim(),
-          whenTime.toString(),
+          commentText,
+          whenTime,
         );
 
         if (!mounted) return;
@@ -320,9 +334,10 @@ class TransactionsState extends State<Transactions> {
         _amountController.clear();
         _commentController.clear();
         widget.onAmountChanged?.call('');
+        widget.onCommentChanged?.call('');
       }
 
-      widget.addSuccess?.call(true);
+      await widget.addSuccess?.call(true);
     } catch (error) {
       if (!mounted) return;
 
@@ -331,7 +346,7 @@ class TransactionsState extends State<Transactions> {
         context,
         widget.onSubmit == null ? "添加失败，请检查输入" : "保存失败，请检查输入",
       );
-      widget.addSuccess?.call(false);
+      await widget.addSuccess?.call(false);
     } finally {
       if (mounted) {
         setState(() {
@@ -430,7 +445,12 @@ class TransactionsState extends State<Transactions> {
                       const Text("备注："),
                       SizedBox(
                         width: 150,
-                        child: TextField(controller: _commentController),
+                        child: TextField(
+                          controller: _commentController,
+                          onChanged: (value) {
+                            widget.onCommentChanged?.call(value);
+                          },
+                        ),
                       ),
                     ],
                   ),

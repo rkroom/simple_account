@@ -61,7 +61,7 @@ dependencies:
   #定时任务
   workmanager: ^0.7.0
   #安全存储
-  flutter_secure_storage: ^10.0.0
+  flutter_secure_storage: ^10.1.0
   #设备信息
   device_info_plus: ^12.3.0
   #日历显示
@@ -71,7 +71,7 @@ dependencies:
   installed_apps: ^2.1.1
   #指纹识别等
   local_auth: ^3.0.1
-  local_auth_android: ^2.0.0
+  local_auth_android: ^2.0.8
 
 dev_dependencies:
   flutter_test:

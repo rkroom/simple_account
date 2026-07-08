@@ -45,12 +45,9 @@ class TransferAccountSelection {
 class TransferForm extends StatefulWidget {
   final List accountNames;
   final Map accountIndexs;
-
   final DateTime time;
-
   final String? amount;
   final String initialComment;
-
   final String outAccountText;
   final int? outAccountId;
   final String inAccountText;
@@ -59,11 +56,13 @@ class TransferForm extends StatefulWidget {
   final String submitButtonText;
   final bool clearAfterSubmit;
 
+  final ValueChanged<String>? onAmountChanged;
+  final ValueChanged<String>? onCommentChanged;
   final ValueChanged<DateTime>? onTimeChanged;
   final ValueChanged<TransferAccountSelection>? onAccountChanged;
 
   final Future<void> Function(TransferFormData formData) onSubmit;
-  final ValueChanged<bool>? submitSuccess;
+  final FutureOr<void> Function(bool success)? submitSuccess;
 
   const TransferForm({
     super.key,
@@ -79,6 +78,8 @@ class TransferForm extends StatefulWidget {
     this.inAccountId,
     this.submitButtonText = '添加',
     this.clearAfterSubmit = false,
+    this.onAmountChanged,
+    this.onCommentChanged,
     this.onTimeChanged,
     this.onAccountChanged,
     this.submitSuccess,
@@ -102,6 +103,10 @@ class _TransferFormState extends State<TransferForm> {
   late final TextEditingController _amountController;
   late final TextEditingController _commentController;
 
+  final FocusNode _blankFocusNode = FocusNode();
+
+  bool _isSubmitting = false;
+
   @override
   void initState() {
     super.initState();
@@ -122,19 +127,53 @@ class _TransferFormState extends State<TransferForm> {
   void didUpdateWidget(covariant TransferForm oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    if (oldWidget.amount != widget.amount) {
+      final newAmount = widget.amount ?? '';
+      if (_amountController.text != newAmount) {
+        _amountController.text = newAmount;
+      }
+    }
+
+    if (oldWidget.initialComment != widget.initialComment) {
+      final newComment = widget.initialComment;
+      if (_commentController.text != newComment) {
+        _commentController.text = newComment;
+      }
+    }
+
     if (oldWidget.time != widget.time) {
       _whenTime = widget.time;
     }
 
-    if (oldWidget.outAccountText != widget.outAccountText ||
-        oldWidget.outAccountId != widget.outAccountId ||
-        oldWidget.inAccountText != widget.inAccountText ||
-        oldWidget.inAccountId != widget.inAccountId) {
+    if (oldWidget.outAccountText != widget.outAccountText) {
       _showTransferAccount = widget.outAccountText;
+    }
+
+    if (oldWidget.outAccountId != widget.outAccountId) {
       _transferAccountId = widget.outAccountId;
+    }
+
+    if (oldWidget.inAccountText != widget.inAccountText) {
       _showTransferAimAccount = widget.inAccountText;
+    }
+
+    if (oldWidget.inAccountId != widget.inAccountId) {
       _transferAimAccountId = widget.inAccountId;
     }
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _commentController.dispose();
+    _blankFocusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _clearTextFieldFocus() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    _blankFocusNode.requestFocus();
+    await Future.delayed(const Duration(milliseconds: 10));
   }
 
   List<String> _parseAccountData(List source) {
@@ -142,6 +181,9 @@ class _TransferFormState extends State<TransferForm> {
   }
 
   Future<void> _openTransferAccountSelector() async {
+    await _clearTextFieldFocus();
+    if (!mounted) return;
+
     final accounts = _parseAccountData(widget.accountNames);
 
     if (accounts.isEmpty) {
@@ -185,145 +227,305 @@ class _TransferFormState extends State<TransferForm> {
     widget.onAccountChanged?.call(selection);
   }
 
+  String _formatTime(DateTime time) {
+    return "${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} "
+        "${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}";
+  }
+
   Future<void> _handleSubmit() async {
-    if (_amountController.text.isEmpty) {
+    if (_isSubmitting) return;
+
+    final amountText = _amountController.text.trim();
+    final amount = double.tryParse(amountText);
+
+    if (amountText.isEmpty) {
       showNoticeSnackBar(context, "金额不能为空");
+      await widget.submitSuccess?.call(false);
+      return;
+    }
+
+    if (amount == null || amount < 0) {
+      showNoticeSnackBar(context, "请输入正确的金额");
+      await widget.submitSuccess?.call(false);
       return;
     }
 
     if (_transferAccountId == null) {
       showNoticeSnackBar(context, "请选择转出账户");
+      await widget.submitSuccess?.call(false);
       return;
     }
 
     if (_transferAimAccountId == null) {
       showNoticeSnackBar(context, "请选择转入账户");
+      await widget.submitSuccess?.call(false);
       return;
     }
 
     if (_transferAccountId == _transferAimAccountId) {
       showNoticeSnackBar(context, "转出账户和转入账户不能相同");
+      await widget.submitSuccess?.call(false);
       return;
     }
 
+    setState(() {
+      _isSubmitting = true;
+    });
+
     try {
-      await widget.onSubmit(
-        TransferFormData(
-          amount: _amountController.text,
-          outAccountId: _transferAccountId!,
-          inAccountId: _transferAimAccountId!,
-          comment: _commentController.text,
-          time: _whenTime,
-          whenTime: _whenTime.toString(),
-          outAccountText: _showTransferAccount,
-          inAccountText: _showTransferAimAccount,
-        ),
+      final payload = TransferFormData(
+        amount: amountText,
+        outAccountId: _transferAccountId!,
+        inAccountId: _transferAimAccountId!,
+        comment: _commentController.text.trim(),
+        time: _whenTime,
+        whenTime: _whenTime.toString(),
+        outAccountText: _showTransferAccount,
+        inAccountText: _showTransferAimAccount,
       );
+
+      await widget.onSubmit(payload);
 
       if (!mounted) return;
 
       if (widget.clearAfterSubmit) {
         _amountController.clear();
         _commentController.clear();
+        widget.onAmountChanged?.call('');
+        widget.onCommentChanged?.call('');
       }
 
-      widget.submitSuccess?.call(true);
-    } catch (_) {
+      await widget.submitSuccess?.call(true);
+    } catch (error) {
       if (!mounted) return;
-      showNoticeSnackBar(context, "保存失败，请检查输入");
-      widget.submitSuccess?.call(false);
+
+      debugPrint(error.toString());
+      showNoticeSnackBar(
+        context,
+        widget.submitButtonText == '添加' ? "添加失败，请检查输入" : "保存失败，请检查输入",
+      );
+      await widget.submitSuccess?.call(false);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
     }
+  }
+
+  Widget _buildSelectCell({
+    required String label,
+    required String value,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+        child: Text("$label$value", textScaler: customTextScaler),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: <Widget>[
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text("金额："),
-            SizedBox(
-              width: 100,
-              child: TextField(
-                inputFormatters: [
-                  TextInputFormatter.withFunction((oldValue, newValue) {
-                    final text = newValue.text;
-                    if (text.isEmpty ||
-                        RegExp(r'^\d*\.?\d{0,2}$').hasMatch(text)) {
-                      return newValue;
-                    }
-                    return oldValue;
-                  }),
-                ],
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
+    return Focus(
+      focusNode: _blankFocusNode,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              const Text("金额："),
+              SizedBox(
+                width: 100,
+                child: TextField(
+                  inputFormatters: [
+                    TextInputFormatter.withFunction((oldValue, newValue) {
+                      final text = newValue.text;
+                      if (text.isEmpty ||
+                          RegExp(r'^\d*\.?\d{0,2}$').hasMatch(text)) {
+                        return newValue;
+                      }
+                      return oldValue;
+                    }),
+                  ],
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  controller: _amountController,
+                  onChanged: widget.onAmountChanged,
                 ),
-                controller: _amountController,
               ),
-            ),
-          ],
-        ),
-        Padding(
-          padding: const EdgeInsets.all(5),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _openTransferAccountSelector,
-            child: Text(
-              "账户：$_showTransferAccount → $_showTransferAimAccount",
-              textScaler: customTextScaler,
-            ),
+            ],
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.all(5),
-          child: GestureDetector(
+          _buildSelectCell(
+            label: "账户：",
+            value: "$_showTransferAccount → $_showTransferAimAccount",
+            onTap: _openTransferAccountSelector,
+          ),
+          GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () {
+            onTap: () async {
+              await _clearTextFieldFocus();
+              if (!context.mounted) return;
+
               DatePicker.showDateTimePicker(
                 context,
                 showTitleActions: true,
+                currentTime: _whenTime,
+                locale: LocaleType.zh,
                 onConfirm: (date) {
                   setState(() {
                     _whenTime = date;
                   });
                   widget.onTimeChanged?.call(date);
                 },
-                currentTime: _whenTime,
-                locale: LocaleType.zh,
               );
             },
-            child: Text(
-              "时间：${_whenTime.year.toString()}-${_whenTime.month.toString().padLeft(2, '0')}-${_whenTime.day.toString().padLeft(2, '0')} ${_whenTime.hour.toString().padLeft(2, '0')}:${_whenTime.minute.toString().padLeft(2, '0')}",
-              textScaler: customTextScaler,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+              child: Text(
+                "时间：${_formatTime(_whenTime)}",
+                textScaler: customTextScaler,
+              ),
             ),
           ),
-        ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text("备注："),
-            SizedBox(
-              width: 150,
-              child: TextField(controller: _commentController),
-            ),
-          ],
-        ),
-        ElevatedButton(
-          onPressed: _handleSubmit,
-          child: Text(widget.submitButtonText),
-        ),
-      ],
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              const Text("备注："),
+              SizedBox(
+                width: 150,
+                child: TextField(
+                  controller: _commentController,
+                  onChanged: widget.onCommentChanged,
+                ),
+              ),
+            ],
+          ),
+          ElevatedButton(
+            onPressed: _isSubmitting ? null : _handleSubmit,
+            child:
+                _isSubmitting
+                    ? Text("${widget.submitButtonText}中...")
+                    : Text(widget.submitButtonText),
+          ),
+        ],
+      ),
     );
+  }
+}
+
+/// 账户按钮文字：根据可用宽度动态缩小字号。
+///
+/// 最大字号采用当前 DefaultTextStyle / Theme 的默认字号，不固定写死。
+/// 文字过长时自动缩小到 minFontSize。
+/// 如果缩小到 minFontSize 后仍然放不下，才显示省略号。
+class _AdaptiveAccountLabel extends StatelessWidget {
+  static const double _minFontSize = 10;
+
+  final String text;
+  final bool selected;
+
+  const _AdaptiveAccountLabel({required this.text, required this.selected});
+
+  double _measureTextWidth({
+    required BuildContext context,
+    required String text,
+    required TextStyle style,
+    required double fontSize,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style.copyWith(fontSize: fontSize)),
+      maxLines: 1,
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout(maxWidth: double.infinity);
+
+    return painter.width;
+  }
+
+  double _calculateFontSize({
+    required BuildContext context,
+    required double maxWidth,
+    required TextStyle style,
+    required double maxFontSize,
+  }) {
+    if (maxWidth <= 0 || maxWidth.isInfinite) {
+      return maxFontSize;
+    }
+
+    final maxTextWidth = _measureTextWidth(
+      context: context,
+      text: text,
+      style: style,
+      fontSize: maxFontSize,
+    );
+
+    if (maxTextWidth <= maxWidth) {
+      return maxFontSize;
+    }
+
+    double low = _minFontSize;
+    double high = maxFontSize;
+
+    for (int i = 0; i < 8; i++) {
+      final mid = (low + high) / 2;
+      final width = _measureTextWidth(
+        context: context,
+        text: text,
+        style: style,
+        fontSize: mid,
+      );
+
+      if (width <= maxWidth) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+
+    return low;
   }
 
   @override
-  void dispose() {
-    _amountController.dispose();
-    _commentController.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    final defaultStyle = DefaultTextStyle.of(context).style;
+
+    final maxFontSize =
+        defaultStyle.fontSize ??
+        Theme.of(context).textTheme.bodyMedium?.fontSize ??
+        14;
+
+    final baseStyle = defaultStyle.copyWith(
+      color: selected ? Colors.white : Colors.black87,
+      fontWeight: FontWeight.w500,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final fontSize = _calculateFontSize(
+          context: context,
+          maxWidth: constraints.maxWidth,
+          style: baseStyle,
+          maxFontSize: maxFontSize,
+        );
+
+        return Text(
+          text,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: baseStyle.copyWith(fontSize: fontSize),
+        );
+      },
+    );
   }
 }
 
@@ -351,13 +553,14 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
   static const int _crossAxisCount = 3;
   static const double _mainAxisSpacing = 12;
   static const double _crossAxisSpacing = 12;
-  static const double _childAspectRatio = 2.4;
+  static const double _childAspectRatio = 2.5;
 
   static const double _horizontalPadding = 16;
   static const double _sectionTopPadding = 12;
   static const double _sectionBottomPadding = 16;
   static const double _titleHeight = 22;
   static const double _titleSpacing = 12;
+  static const double _scrollbarReservedWidth = 12;
 
   static const double _headerHeight = 58;
   static const double _dividerHeight = 1;
@@ -372,6 +575,9 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
   bool _outTouched = false;
   bool _inTouched = false;
   bool _isConfirming = false;
+
+  final ScrollController _outScrollController = ScrollController();
+  final ScrollController _inScrollController = ScrollController();
 
   @override
   void initState() {
@@ -388,6 +594,13 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
 
     _initialOutIndex = selectedOutIndex;
     _initialInIndex = selectedInIndex;
+  }
+
+  @override
+  void dispose() {
+    _outScrollController.dispose();
+    _inScrollController.dispose();
+    super.dispose();
   }
 
   bool get _hasBothSelected => selectedOutIndex >= 0 && selectedInIndex >= 0;
@@ -511,6 +724,7 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
     required int selectedIndex,
     required ValueChanged<int> onTap,
     required bool scrollable,
+    required ScrollController controller,
   }) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -540,48 +754,67 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
             child:
                 widget.accounts.isEmpty
                     ? const Center(child: Text("暂无账户"))
-                    : GridView.builder(
-                      physics:
-                          scrollable
-                              ? const BouncingScrollPhysics()
-                              : const NeverScrollableScrollPhysics(),
-                      itemCount: widget.accounts.length,
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: _crossAxisCount,
-                            mainAxisSpacing: _mainAxisSpacing,
-                            crossAxisSpacing: _crossAxisSpacing,
-                            childAspectRatio: _childAspectRatio,
-                          ),
-                      itemBuilder: (context, index) {
-                        final selected = index == selectedIndex;
-                        return GestureDetector(
-                          onTap: () => onTap(index),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color:
-                                  selected ? Colors.blue : Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
+                    : Scrollbar(
+                      controller: controller,
+                      thumbVisibility: scrollable,
+                      trackVisibility: scrollable,
+                      interactive: true,
+                      radius: const Radius.circular(8),
+                      child: GridView.builder(
+                        controller: controller,
+                        padding:
+                            scrollable
+                                ? const EdgeInsets.only(
+                                  right: _scrollbarReservedWidth,
+                                )
+                                : EdgeInsets.zero,
+                        physics:
+                            scrollable
+                                ? const BouncingScrollPhysics()
+                                : const NeverScrollableScrollPhysics(),
+                        itemCount: widget.accounts.length,
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: _crossAxisCount,
+                              mainAxisSpacing: _mainAxisSpacing,
+                              crossAxisSpacing: _crossAxisSpacing,
+                              childAspectRatio: _childAspectRatio,
+                            ),
+                        itemBuilder: (context, index) {
+                          final selected = index == selectedIndex;
+
+                          return GestureDetector(
+                            onTap: () => onTap(index),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
                                 color:
                                     selected
                                         ? Colors.blue
-                                        : Colors.grey.shade300,
-                                width: 1,
+                                        : Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color:
+                                      selected
+                                          ? Colors.blue
+                                          : Colors.grey.shade300,
+                                  width: 1,
+                                ),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                child: _AdaptiveAccountLabel(
+                                  text: widget.accounts[index],
+                                  selected: selected,
+                                ),
                               ),
                             ),
-                            child: Text(
-                              widget.accounts[index],
-                              style: TextStyle(
-                                color: selected ? Colors.white : Colors.black87,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
           ),
         ],
@@ -641,6 +874,7 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
                       title: "转出账户",
                       selectedIndex: selectedOutIndex,
                       scrollable: layout.outScrollable,
+                      controller: _outScrollController,
                       onTap: (index) {
                         final changed = selectedOutIndex != index;
 
@@ -663,6 +897,7 @@ class _TransferAccountSheetState extends State<_TransferAccountSheet> {
                       title: "转入账户",
                       selectedIndex: selectedInIndex,
                       scrollable: layout.inScrollable,
+                      controller: _inScrollController,
                       onTap: (index) {
                         final changed = selectedInIndex != index;
 
