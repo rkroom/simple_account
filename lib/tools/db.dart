@@ -392,6 +392,33 @@ JOIN TopValues t on a.id = t.account_info_id""",
     );
   }
 
+  // 修改转账账单
+  Future<int> updateTransfer({
+    required int id,
+    required String detailed,
+    required int accountId,
+    required int aimAccountId,
+    required String comment,
+    required dynamic whenTime,
+  }) async {
+    final db = await database;
+
+    return db.update(
+      'books_account_book',
+      {
+        'flow': 'transfer',
+        'detailed': detailed,
+        'account_info_id': accountId,
+        'aim_account_id': aimAccountId,
+        'types_id': null,
+        'comment': comment,
+        'when_time': _normalizeSqliteDateTime(whenTime),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   //账单列表
   ///
   /// [pageSize] 每页要检索的记录数。

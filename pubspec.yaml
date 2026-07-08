@@ -30,7 +30,7 @@ dependencies:
   #访问常用位置
   path_provider: ^2.1.5
   #文件选择器
-  file_picker: ^10.3.10
+  file_picker: ^11.0.2
   #sqlcipher
   sqflite_sqlcipher: ^3.3.0
   #路径拼接

@@ -7,6 +7,7 @@ import '../tools/config_enum.dart';
 import '../tools/db.dart';
 import '../tools/event_bus.dart';
 import 'transactions.dart';
+import 'transfer_form.dart';
 
 class StatementWidget extends StatefulWidget {
   final DateTime? startTime;
@@ -176,6 +177,107 @@ class StatementWidgetState extends State<StatementWidget> {
     return null;
   }
 
+  Future<void> _showEditTransferSheet(StatementItem item) async {
+    if (item.id == null) {
+      showNoticeSnackBar(context, '无法编辑：记录 id 为空');
+      return;
+    }
+
+    try {
+      final accountRows = List<Map<String, dynamic>>.from(
+        await DB().getAccounts(),
+      );
+
+      final List<String> accountNames = [];
+      final Map<String, int> accountIndexs = {};
+
+      for (final row in accountRows) {
+        final name = row['name']?.toString() ?? '';
+        final id = StatementItem._toInt(row['id']);
+        if (name.isNotEmpty && id != null) {
+          accountNames.add(name);
+          accountIndexs[name] = id;
+        }
+      }
+
+      final outAccountId = item.accountId ?? accountIndexs[item.account];
+      final inAccountId = item.aimAccountId ?? accountIndexs[item.aimAccount];
+
+      if (outAccountId == null || inAccountId == null) {
+        if (mounted) {
+          showNoticeSnackBar(context, '无法编辑：转账记录缺少账户信息');
+        }
+        return;
+      }
+
+      if (!mounted) return;
+
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (sheetContext) {
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: TransferForm(
+                    amount: item.amount,
+                    initialComment: item.comment,
+                    accountNames: accountNames,
+                    accountIndexs: accountIndexs,
+                    time: _parseStatementTime(item.date),
+                    outAccountText: item.account.isEmpty ? '请选择' : item.account,
+                    outAccountId: outAccountId,
+                    inAccountText:
+                        item.aimAccount.isEmpty ? '请选择' : item.aimAccount,
+                    inAccountId: inAccountId,
+                    submitButtonText: '保存',
+                    onSubmit: (formData) async {
+                      await DB().updateTransfer(
+                        id: item.id!,
+                        detailed: formData.amount,
+                        accountId: formData.outAccountId,
+                        aimAccountId: formData.inAccountId,
+                        comment: formData.comment,
+                        whenTime: formData.time,
+                      );
+                    },
+                    submitSuccess: (success) {
+                      if (!success) return;
+
+                      if (sheetContext.mounted) {
+                        Navigator.of(sheetContext).pop();
+                      }
+
+                      _refreshList();
+
+                      if (mounted) {
+                        showNoticeSnackBar(context, '编辑成功');
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } catch (error) {
+      if (mounted) {
+        showNoticeSnackBar(context, '打开转账编辑失败：$error');
+      }
+    }
+  }
+
   Future<void> _showEditSheet(StatementItem item) async {
     if (item.id == null) {
       showNoticeSnackBar(context, '无法编辑：记录 id 为空');
@@ -183,7 +285,7 @@ class StatementWidgetState extends State<StatementWidget> {
     }
 
     if (item.isTransfer) {
-      showNoticeSnackBar(context, '当前版本暂不支持编辑转账记录');
+      await _showEditTransferSheet(item);
       return;
     }
 
@@ -404,13 +506,11 @@ class StatementWidgetState extends State<StatementWidget> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            if (!item.isTransfer) ...[
-                              ElevatedButton(
-                                onPressed: () => _showEditSheet(item),
-                                child: const Text('编辑'),
-                              ),
-                              const SizedBox(width: 12),
-                            ],
+                            ElevatedButton(
+                              onPressed: () => _showEditSheet(item),
+                              child: const Text('编辑'),
+                            ),
+                            const SizedBox(width: 12),
                             ElevatedButton(
                               onPressed: () => _showConfirmationDialog(item),
                               child: const Text('删除'),
@@ -442,6 +542,7 @@ class StatementWidgetState extends State<StatementWidget> {
 class StatementItem {
   final int? id;
   final int? accountId;
+  final int? aimAccountId;
   final int? categoryId;
   final String flowSign;
 
@@ -457,6 +558,7 @@ class StatementItem {
   const StatementItem({
     required this.id,
     required this.accountId,
+    required this.aimAccountId,
     required this.categoryId,
     required this.flowSign,
     required this.date,
@@ -473,6 +575,7 @@ class StatementItem {
     return StatementItem(
       id: _toInt(map['id']),
       accountId: _toInt(map['account_id']),
+      aimAccountId: _toInt(map['aim_account_id']),
       categoryId: _toInt(map['category_id']),
       flowSign: map['flowSign']?.toString() ?? '',
       date: map['date']?.toString() ?? '',

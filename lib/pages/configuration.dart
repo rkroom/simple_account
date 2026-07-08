@@ -423,7 +423,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     if (confirmImport != true) return;
 
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
+      FilePickerResult? result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['json'],
       );

@@ -271,8 +271,9 @@ class LoadingWidgetState extends State<LoadingWidget> {
               MaterialButton(
                 child: const Text("导入账本", textScaler: customTextScaler),
                 onPressed: () async {
-                  FilePickerResult? result = await FilePicker.platform
-                      .pickFiles(type: FileType.any);
+                  FilePickerResult? result = await FilePicker.pickFiles(
+                    type: FileType.any,
+                  );
 
                   if (result != null && mounted) {
                     File sourceFile = File(result.files.single.path!);
