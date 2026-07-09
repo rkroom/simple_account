@@ -38,6 +38,18 @@ class NotificationService {
   static const NotificationDetails _schedulePlatformChannelSpecifics =
       NotificationDetails(android: _scheduleChannelSpecifics);
 
+  static const AndroidNotificationDetails _pendingBillChannelSpecifics =
+      AndroidNotificationDetails(
+        'pending_bills',
+        'pending_bills',
+        importance: Importance.max,
+        priority: Priority.high,
+        showWhen: false,
+      );
+
+  static const NotificationDetails _pendingBillPlatformChannelSpecifics =
+      NotificationDetails(android: _pendingBillChannelSpecifics);
+
   Future<void> initNotification() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -79,6 +91,20 @@ class NotificationService {
       body: body,
       notificationDetails: _schedulePlatformChannelSpecifics,
       payload: '/home/schedule',
+    );
+  }
+
+  Future<void> showPendingBillNotification(
+    int id,
+    String title,
+    String body,
+  ) async {
+    await _flutterLocalNotificationsPlugin.show(
+      id: id,
+      title: title,
+      body: body,
+      notificationDetails: _pendingBillPlatformChannelSpecifics,
+      payload: '/billListener',
     );
   }
 

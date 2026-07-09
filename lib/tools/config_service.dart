@@ -164,6 +164,32 @@ class ConfigService {
     return box.put("scheduleNotificationTaskTime", time);
   }
 
+  Future<bool> getPendingBillNotificationTaskStatus() async {
+    var box = await _box;
+    return box.get("pendingBillNotificationTaskStatus", defaultValue: false);
+  }
+
+  Future<void> setPendingBillNotificationTaskStatus(bool status) async {
+    var box = await _box;
+    return box.put("pendingBillNotificationTaskStatus", status);
+  }
+
+  Future<Map<String, int>> getPendingBillNotificationTaskTime() async {
+    var box = await _box;
+    final raw = await box.get(
+      "pendingBillNotificationTaskTime",
+      defaultValue: {"hour": 19, "minute": 0, "second": 0},
+    );
+    return Map<String, int>.from(
+      raw.cast<String, dynamic>(),
+    ).map((k, v) => MapEntry(k, v));
+  }
+
+  Future<void> setPendingBillNotificationTaskTime(Map<String, int> time) async {
+    var box = await _box;
+    return box.put("pendingBillNotificationTaskTime", time);
+  }
+
   Future<bool> getSavedAccConfig() async {
     var box = await _box;
     return box.get("accConfig", defaultValue: false);
@@ -201,6 +227,8 @@ class ConfigService {
       await box.delete("notificationTaskTime");
       await box.delete("ScheduleNotificationTaskStatus");
       await box.delete("scheduleNotificationTaskTime");
+      await box.delete("pendingBillNotificationTaskStatus");
+      await box.delete("pendingBillNotificationTaskTime");
       await box.delete("accConfig");
       await box.delete("nlConfig");
       await box.delete("biometricUnlockEnabled");

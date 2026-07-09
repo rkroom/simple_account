@@ -3,14 +3,15 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
 
+import 'bill_listener_service.dart';
 import 'config_enum.dart';
 import 'config_service.dart';
-import 'notification_service.dart';
-import 'tools.dart';
 import 'db.dart';
-import 'schedule_rule_helper.dart';
-import 'schedule_notification_helper.dart';
 import 'entity.dart';
+import 'notification_service.dart';
+import 'schedule_notification_helper.dart';
+import 'schedule_rule_helper.dart';
+import 'tools.dart';
 
 class WorkmanagerTasks {
   // 每日统计任务
@@ -20,6 +21,10 @@ class WorkmanagerTasks {
   // 计划任务提醒
   static const String scheduleUniqueName = "scheduleTask";
   static const String scheduleTaskName = "scheduleNotification";
+
+  // 暂存账单提醒
+  static const String pendingBillUniqueName = "pendingBillTask";
+  static const String pendingBillTaskName = "pendingBillNotification";
 }
 
 @pragma('vm:entry-point')
@@ -43,6 +48,11 @@ void callbackDispatcher() {
           taskSuccess = true;
           break;
 
+        case WorkmanagerTasks.pendingBillTaskName:
+          await handlePendingBillNotifications();
+          taskSuccess = true;
+          break;
+
         default:
           debugPrint("接收到未知任务: $task");
           taskSuccess = false;
@@ -57,10 +67,15 @@ void callbackDispatcher() {
       debugPrint('Workmanager 执行失败: $e');
       return Future.value(false);
     } finally {
-      if (task == WorkmanagerTasks.dailyTaskName) {
+      if (task == WorkmanagerTasks.dailyTaskName &&
+          await ConfigService().getNotificationTaskStatus()) {
         await WorkmanagerTool.scheduleDailyTask();
-      } else if (task == WorkmanagerTasks.scheduleTaskName) {
+      } else if (task == WorkmanagerTasks.scheduleTaskName &&
+          await ConfigService().getScheduleNotificationTaskStatus()) {
         await WorkmanagerTool.scheduleNotificationTask();
+      } else if (task == WorkmanagerTasks.pendingBillTaskName &&
+          await ConfigService().getPendingBillNotificationTaskStatus()) {
+        await WorkmanagerTool.schedulePendingBillNotificationTask();
       }
     }
   });
@@ -95,6 +110,12 @@ class WorkmanagerTool {
       await scheduleNotificationTask();
     }
 
+    final isPendingBillTaskEnabled =
+        await ConfigService().getPendingBillNotificationTaskStatus();
+    if (isPendingBillTaskEnabled) {
+      await schedulePendingBillNotificationTask();
+    }
+
     ConfigService().setScheduledTaskTime(DateTime.now());
   }
 
@@ -112,6 +133,15 @@ class WorkmanagerTool {
       taskName: WorkmanagerTasks.scheduleTaskName,
       timeConfigFetcher:
           () => ConfigService().getScheduleNotificationTaskTime(),
+    );
+  }
+
+  static Future<void> schedulePendingBillNotificationTask() async {
+    await _scheduleGenericTask(
+      uniqueName: WorkmanagerTasks.pendingBillUniqueName,
+      taskName: WorkmanagerTasks.pendingBillTaskName,
+      timeConfigFetcher:
+          () => ConfigService().getPendingBillNotificationTaskTime(),
     );
   }
 
@@ -155,6 +185,28 @@ class WorkmanagerTool {
     await initialize();
     await Workmanager().cancelByUniqueName(WorkmanagerTasks.scheduleUniqueName);
   }
+
+  static Future<void> cancelPendingBillNotificationTask() async {
+    await initialize();
+    await Workmanager().cancelByUniqueName(
+      WorkmanagerTasks.pendingBillUniqueName,
+    );
+  }
+}
+
+Future<void> handlePendingBillNotifications() async {
+  final bills = await BillListenerService().getBills();
+  final pendingBillCount = bills.length;
+
+  if (pendingBillCount <= 0) {
+    return;
+  }
+
+  await NotificationService().showPendingBillNotification(
+    190000,
+    '暂存账单提醒',
+    '有$pendingBillCount条暂存账单待处理。',
+  );
 }
 
 Future<void> handleScheduledNotifications() async {

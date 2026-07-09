@@ -213,6 +213,26 @@ class NativeMethodChannel {
     }
   }
 
+  Future<bool> getEnableRecordToast() async {
+    try {
+      final bool? result = await _channel.invokeMethod<bool>(
+        'getEnableRecordToast',
+      );
+      return result ?? true;
+    } catch (e) {
+      debugPrint('Failed to get enableRecordToast: $e');
+      return true;
+    }
+  }
+
+  Future<void> putEnableRecordToast(bool value) async {
+    try {
+      await _channel.invokeMethod('putEnableRecordToast', {'value': value});
+    } catch (e) {
+      debugPrint('Failed to put enableRecordToast: $e');
+    }
+  }
+
   Future<String?> getLogLevel() async {
     try {
       final String? result = await _channel.invokeMethod<String>('getLogLevel');

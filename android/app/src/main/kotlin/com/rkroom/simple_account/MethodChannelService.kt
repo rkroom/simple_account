@@ -416,6 +416,35 @@ class MethodChannelService {
                                 result.error("INVALID_ARGUMENT", "参数 'value' 为空", null)
                             }
                         }
+                        "getEnableRecordToast" -> {
+                            try {
+                                val value = configManager.getEnableRecordToast()
+                                result.success(value)
+                            } catch (e: Exception) {
+                                result.error(
+                                        "GET_CONFIG_FAILED",
+                                        "获取 EnableRecordToast 失败: ${e.message}",
+                                        null
+                                )
+                            }
+                        }
+                        "putEnableRecordToast" -> {
+                            val value = call.argument<Boolean>("value")
+                            if (value != null) {
+                                try {
+                                    configManager.putEnableRecordToast(value)
+                                    result.success(null)
+                                } catch (e: Exception) {
+                                    result.error(
+                                            "PUT_CONFIG_FAILED",
+                                            "保存 EnableRecordToast 失败: ${e.message}",
+                                            null
+                                    )
+                                }
+                            } else {
+                                result.error("INVALID_ARGUMENT", "参数 'value' 为空", null)
+                            }
+                        }
                         "getLogLevel" -> {
                             try {
                                 val level = configManager.getLogLevel()

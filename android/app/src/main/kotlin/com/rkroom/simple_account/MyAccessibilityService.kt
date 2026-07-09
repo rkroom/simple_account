@@ -106,6 +106,7 @@ class MyAccessibilityService : AccessibilityService() {
     private val pageTriggerCounts = ConcurrentHashMap<PageIdentifier, Int>()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var configObserveJob: Job? = null
+    private var recordToastObserveJob: Job? = null
     @Volatile private var cachedAllowedPackageNames: Set<String> = emptySet()
     @Volatile private var cachedExtractionRules: Map<String, List<ExtractionRule>> = emptyMap()
     private val windowChangeDebounceJobs = ConcurrentHashMap<PageIdentifier, Job>()
@@ -113,6 +114,7 @@ class MyAccessibilityService : AccessibilityService() {
     @Volatile private var windowChangeDebounceMs: Long = 500L
     @Volatile private var contentChangeDebounceMs: Long = 500L
     @Volatile private var isContentChangeEnabled: Boolean = false
+    @Volatile private var isRecordToastEnabled: Boolean = true
 
     private fun cancelAndClearJobs(map: ConcurrentHashMap<PageIdentifier, Job>, reason: String) {
         map.values.forEach { job ->
@@ -127,6 +129,7 @@ class MyAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         AppLog.i { "无障碍服务已连接。" }
         observeServiceConfig()
+        observeRecordToastConfig()
     }
 
     private fun observeServiceConfig() {
@@ -161,6 +164,20 @@ class MyAccessibilityService : AccessibilityService() {
                         withContext(Dispatchers.Main) { updateServiceInfo(config) }
 
                         AppLog.i { "配置刷新完成。监听包数量: ${config.allowedPackageNames.size}" }
+                    }
+                }
+    }
+
+    private fun observeRecordToastConfig() {
+        recordToastObserveJob?.cancel("Restart record toast config observer")
+
+        recordToastObserveJob =
+                serviceScope.launch {
+                    val configManager = ConfigDataStoreManager.getInstance(applicationContext)
+
+                    configManager.recordToastFlow.collect { enabled ->
+                        isRecordToastEnabled = enabled
+                        AppLog.d { "账单记录成功 Toast 提示: $enabled" }
                     }
                 }
     }
@@ -858,6 +875,8 @@ class MyAccessibilityService : AccessibilityService() {
         BillDataStoreManager.getInstance(applicationContext).saveBillAsync(data)
 
         withContext(Dispatchers.Main) {
+            if (!isRecordToastEnabled) return@withContext
+
             val detailParts = buildList {
                 if (!content.isNullOrBlank()) add(content)
                 if (!payment.isNullOrBlank()) add("支付方式: $payment")
@@ -897,6 +916,8 @@ class MyAccessibilityService : AccessibilityService() {
         cancelAndClearJobs(windowChangeDebounceJobs, "Service destroyed")
         cancelAndClearJobs(contentChangeDebounceJobs, "Service destroyed")
         pageTriggerCounts.clear()
+        configObserveJob?.cancel("Service destroyed")
+        recordToastObserveJob?.cancel("Service destroyed")
         serviceScope.cancel()
     }
 }

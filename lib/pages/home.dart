@@ -79,6 +79,10 @@ class HomeWidgetState extends State<HomeWidget> {
         if (mounted) {
           Navigator.of(context).pushNamed('/statistic');
         }
+      } else if (payload == '/billListener') {
+        if (mounted) {
+          Navigator.of(context).pushNamed('/billListener');
+        }
       }
     });
   }
@@ -91,8 +95,10 @@ class HomeWidgetState extends State<HomeWidget> {
     bool dailyTaskStatus = await ConfigService().getNotificationTaskStatus();
     bool scheduleTaskStatus =
         await ConfigService().getScheduleNotificationTaskStatus();
+    bool pendingBillTaskStatus =
+        await ConfigService().getPendingBillNotificationTaskStatus();
 
-    if (!dailyTaskStatus && !scheduleTaskStatus) {
+    if (!dailyTaskStatus && !scheduleTaskStatus && !pendingBillTaskStatus) {
       return;
     }
 

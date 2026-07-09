@@ -30,7 +30,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   bool _postNotificationChecked = false;
   bool _notificationTaskChecked = false;
   bool _scheduleNotificationTaskChecked = false;
+  bool _pendingBillNotificationTaskChecked = false;
   bool _enableWindowContentChange = false;
+  bool _enableRecordToast = true;
   bool _isLoading = true;
   bool _savedAccConfig = false;
   bool _savedNlConfig = false;
@@ -42,6 +44,10 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   int _scheduleTaskHour = 0;
   int _scheduleTaskMinute = 0;
   int _scheduleTaskSecond = 0;
+
+  int _pendingBillTaskHour = 19;
+  int _pendingBillTaskMinute = 0;
+  int _pendingBillTaskSecond = 0;
 
   List<PackageConfig> _abAllowedPackages = [];
   List<PackageConfig> _nlAllowedPackages = [];
@@ -99,6 +105,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       final postNoti = status == PermissionStatus.granted;
       final enableWindowChange =
           await NativeMethodChannel.instance.getEnableWindowContentChange();
+      final enableRecordToast =
+          await NativeMethodChannel.instance.getEnableRecordToast();
 
       final String? logLevelName =
           await NativeMethodChannel.instance.getLogLevel();
@@ -116,6 +124,12 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
           await ConfigService().getScheduleNotificationTaskStatus();
       final savedScheduleTime =
           await ConfigService().getScheduleNotificationTaskTime();
+
+      // 暂存账单提醒任务
+      final pendingBillTaskStatus =
+          await ConfigService().getPendingBillNotificationTaskStatus();
+      final savedPendingBillTime =
+          await ConfigService().getPendingBillNotificationTaskTime();
 
       final List<Map<String, dynamic>>? rawAbData =
           await NativeMethodChannel.instance.getAbAllowPackageConfig();
@@ -143,6 +157,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _notificationChecked = noti;
         _postNotificationChecked = postNoti;
         _enableWindowContentChange = enableWindowChange;
+        _enableRecordToast = enableRecordToast;
         _savedAccConfig = savedAcc;
         _savedNlConfig = savedNl;
 
@@ -155,6 +170,11 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _scheduleTaskHour = savedScheduleTime['hour']!;
         _scheduleTaskMinute = savedScheduleTime['minute']!;
         _scheduleTaskSecond = savedScheduleTime['second']!;
+
+        _pendingBillNotificationTaskChecked = pendingBillTaskStatus;
+        _pendingBillTaskHour = savedPendingBillTime['hour']!;
+        _pendingBillTaskMinute = savedPendingBillTime['minute']!;
+        _pendingBillTaskSecond = savedPendingBillTime['second']!;
 
         _abAllowedPackages = abPackages;
         _nlAllowedPackages = nlPackages;
@@ -272,6 +292,41 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     );
   }
 
+  void _pickPendingBillTaskTime() {
+    DatePicker.showTimePicker(
+      context,
+      showSecondsColumn: true,
+      currentTime: DateTime(
+        0,
+        0,
+        0,
+        _pendingBillTaskHour,
+        _pendingBillTaskMinute,
+        _pendingBillTaskSecond,
+      ),
+      locale: LocaleType.zh,
+      onConfirm: (DateTime dt) async {
+        final newTime = {
+          'hour': dt.hour,
+          'minute': dt.minute,
+          'second': dt.second,
+        };
+        await ConfigService().setPendingBillNotificationTaskTime(newTime);
+
+        if (_pendingBillNotificationTaskChecked) {
+          await WorkmanagerTool.schedulePendingBillNotificationTask();
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _pendingBillTaskHour = dt.hour;
+          _pendingBillTaskMinute = dt.minute;
+          _pendingBillTaskSecond = dt.second;
+        });
+      },
+    );
+  }
+
   String _getSubtitleText(List<PackageConfig> packages) {
     if (packages.isEmpty) {
       return '未配置应用';
@@ -322,6 +377,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
         await WorkmanagerTool.cancelDailyTask();
         await WorkmanagerTool.cancelScheduleNotificationTask();
+        await WorkmanagerTool.cancelPendingBillNotificationTask();
 
         if (mounted) {
           showNoticeSnackBar(context, '已成功重置所有设置');
@@ -368,12 +424,15 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       final keywords =
           await NativeMethodChannel.instance.getAllowKeywords() ?? [];
       final rules = await NativeMethodChannel.instance.getExtractionRules();
+      final enableRecordToast =
+          await NativeMethodChannel.instance.getEnableRecordToast();
 
       final allConfigs = {
         'abPackageConfig': abConfig,
         'nlPackageConfig': nlConfig,
         'nlKeywords': keywords,
         'extractionRules': rules,
+        'enableRecordToast': enableRecordToast,
       };
 
       const jsonEncoder = JsonEncoder.withIndent('  ');
@@ -439,11 +498,13 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         final nlConfigRaw = decodedJson['nlPackageConfig'];
         final keywordsRaw = decodedJson['nlKeywords'];
         final rulesRaw = decodedJson['extractionRules'];
+        final enableRecordToastRaw = decodedJson['enableRecordToast'];
 
         if (abConfigRaw is! List ||
             nlConfigRaw is! List ||
             keywordsRaw is! List ||
-            (rulesRaw != null && rulesRaw is! List)) {
+            (rulesRaw != null && rulesRaw is! List) ||
+            (enableRecordToastRaw != null && enableRecordToastRaw is! bool)) {
           throw Exception('配置文件格式无效。');
         }
 
@@ -467,6 +528,11 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         await NativeMethodChannel.instance.putNlAllowPackageConfig(nlConfig);
         await NativeMethodChannel.instance.putAllowKeywords(keywords);
         await NativeMethodChannel.instance.putExtractionRules(rules);
+        if (enableRecordToastRaw is bool) {
+          await NativeMethodChannel.instance.putEnableRecordToast(
+            enableRecordToastRaw,
+          );
+        }
 
         if (mounted) {
           showNoticeSnackBar(context, '配置已成功导入');
@@ -512,6 +578,22 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     });
   }
 
+  Future<void> handlePendingBillNotificationToggle(
+    bool newCheckedState,
+  ) async {
+    await ConfigService().setPendingBillNotificationTaskStatus(newCheckedState);
+    if (newCheckedState) {
+      await WorkmanagerTool.schedulePendingBillNotificationTask();
+    } else {
+      await WorkmanagerTool.cancelPendingBillNotificationTask();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _pendingBillNotificationTaskChecked = newCheckedState;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final String abSubtitle =
@@ -538,6 +620,11 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         '${_scheduleTaskHour.toString().padLeft(2, '0')}:'
         '${_scheduleTaskMinute.toString().padLeft(2, '0')}:'
         '${_scheduleTaskSecond.toString().padLeft(2, '0')}';
+
+    final pendingBillTimeLabel =
+        '${_pendingBillTaskHour.toString().padLeft(2, '0')}:'
+        '${_pendingBillTaskMinute.toString().padLeft(2, '0')}:'
+        '${_pendingBillTaskSecond.toString().padLeft(2, '0')}';
 
     return Scaffold(
       appBar: AppBar(title: const Text('配置')),
@@ -597,6 +684,40 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
                 );
                 setState(() {
                   _enableWindowContentChange = newValue;
+                });
+              },
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('账单记录提示'),
+              subtitle: const Text(
+                '开启后，辅助功能自动记录账单时显示系统提示。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: Checkbox(
+                value: _enableRecordToast,
+                onChanged: (bool? newValue) async {
+                  if (newValue != null) {
+                    await NativeMethodChannel.instance.putEnableRecordToast(
+                      newValue,
+                    );
+                    if (!mounted) return;
+                    setState(() {
+                      _enableRecordToast = newValue;
+                    });
+                  }
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                final newValue = !_enableRecordToast;
+                await NativeMethodChannel.instance.putEnableRecordToast(
+                  newValue,
+                );
+                if (!mounted) return;
+                setState(() {
+                  _enableRecordToast = newValue;
                 });
               },
             ),
@@ -721,6 +842,42 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               trailing: IconButton(
                 icon: const Icon(Icons.access_time),
                 onPressed: _pickScheduleTaskTime,
+              ),
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('暂存账单提醒开关'),
+              subtitle: Text(
+                '每天 $pendingBillTimeLabel 检查暂存账单，有待处理账单时发送通知。',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: Checkbox(
+                value: _pendingBillNotificationTaskChecked,
+                onChanged: (bool? checked) async {
+                  if (checked == true) {
+                    await registerNotification();
+                  }
+                  if (checked != null) {
+                    await handlePendingBillNotificationToggle(checked);
+                  }
+                },
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              onTap: () async {
+                final nextCheckedState = !_pendingBillNotificationTaskChecked;
+                if (nextCheckedState) {
+                  await registerNotification();
+                }
+                await handlePendingBillNotificationToggle(nextCheckedState);
+              },
+            ),
+            ListTile(
+              title: const Text('暂存账单提醒时间'),
+              subtitle: Text(pendingBillTimeLabel),
+              trailing: IconButton(
+                icon: const Icon(Icons.access_time),
+                onPressed: _pickPendingBillTaskTime,
               ),
             ),
             ListTile(

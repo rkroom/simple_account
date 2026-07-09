@@ -270,9 +270,11 @@ class ConfigDataStoreManager private constructor(context: Context) {
                         longPreferencesKey("contentChangeDebounceMs")
                 private val KEY_ENABLE_WINDOW_CONTENT_CHANGE =
                         booleanPreferencesKey("enableWindowContentChange")
+                private val KEY_ENABLE_RECORD_TOAST = booleanPreferencesKey("enableRecordToast")
                 private const val DEFAULT_WINDOW_CHANGE_DEBOUNCE_MS = 500L
                 private const val DEFAULT_CONTENT_CHANGE_DEBOUNCE_MS = 500L
                 private const val DEFAULT_ENABLE_WINDOW_CONTENT_CHANGE = false
+                private const val DEFAULT_ENABLE_RECORD_TOAST = true
 
                 // 默认值
                 private val DEFAULT_AB_PACKAGES_CONFIG: List<PackageConfigItem> =
@@ -768,6 +770,33 @@ class ConfigDataStoreManager private constructor(context: Context) {
                         preferences[KEY_ENABLE_WINDOW_CONTENT_CHANGE] = value
                 }
         }
+
+        /** 获取是否开启账单记录成功 Toast 提示 */
+        suspend fun getEnableRecordToast(): Boolean {
+                return context.configDataStore
+                        .data
+                        .map { preferences ->
+                                preferences[KEY_ENABLE_RECORD_TOAST]
+                                        ?: DEFAULT_ENABLE_RECORD_TOAST
+                        }
+                        .first()
+        }
+
+        /** 设置是否开启账单记录成功 Toast 提示 */
+        suspend fun putEnableRecordToast(value: Boolean) {
+                context.configDataStore.edit { preferences ->
+                        preferences[KEY_ENABLE_RECORD_TOAST] = value
+                }
+        }
+
+        val recordToastFlow: Flow<Boolean> =
+                context.configDataStore
+                        .data
+                        .map { preferences ->
+                                preferences[KEY_ENABLE_RECORD_TOAST]
+                                        ?: DEFAULT_ENABLE_RECORD_TOAST
+                        }
+                        .distinctUntilChanged()
 
         // flow，触发配置刷新
         val serviceConfigFlow: Flow<ServiceConfig> =
