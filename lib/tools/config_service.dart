@@ -4,9 +4,12 @@ import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
+import 'bill_parse_rule.dart';
 import 'entity.dart';
 
 class ConfigService {
+  static const String _billParseRulesKey = 'billParseRules';
+
   // 单例模式
   static final ConfigService _singleton = ConfigService._internal();
   factory ConfigService() => _singleton;
@@ -220,6 +223,26 @@ class ConfigService {
     return box.put("biometricUnlockEnabled", enabled);
   }
 
+  Future<String> getBillParseRulesJson() async {
+    final box = await _box;
+    final value = box.get(_billParseRulesKey);
+    if (value is String && value.trim().isNotEmpty) {
+      return value;
+    }
+    return BillParseRuleDocument.defaults().toJsonString();
+  }
+
+  Future<void> setBillParseRulesJson(String value) async {
+    BillParseRuleDocument.fromJsonString(value);
+    final box = await _box;
+    await box.put(_billParseRulesKey, value);
+  }
+
+  Future<void> resetBillParseRules() async {
+    final box = await _box;
+    await box.delete(_billParseRulesKey);
+  }
+
   Future<bool> resetSettings() async {
     var box = await _box;
     try {
@@ -232,6 +255,7 @@ class ConfigService {
       await box.delete("accConfig");
       await box.delete("nlConfig");
       await box.delete("biometricUnlockEnabled");
+      await box.delete(_billParseRulesKey);
       return true;
     } catch (e) {
       //debugPrint(e.toString());

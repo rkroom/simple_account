@@ -67,7 +67,18 @@ class BillListenerWidgetState extends State<BillListenerWidget>
 
     final firstId = list.first.id;
     return _cardKeys[firstId]?.currentState?.currentFlow ??
-        _BillListenerFlow.consume;
+        _parseBillListenerFlow(list.first.flow);
+  }
+
+  _BillListenerFlow _parseBillListenerFlow(dynamic value) {
+    switch (value?.toString()) {
+      case 'income':
+        return _BillListenerFlow.income;
+      case 'transfer':
+        return _BillListenerFlow.transfer;
+      default:
+        return _BillListenerFlow.consume;
+    }
   }
 
   void _removeUnusedKeys(List currentNotifications) {
@@ -479,25 +490,70 @@ class _BillListenerEditorCardState extends State<_BillListenerEditorCard> {
   void _resetFromBillItem() {
     final billItem = widget.billItem;
 
-    _flow = _BillListenerFlow.consume;
+    _flow = _flowFromValue(billItem.flow);
 
     _amount = billItem.detailed?.toString() ?? '';
-    _comment = '';
+    _comment = billItem.comment?.toString() ?? '';
 
     _time = billItem.time ?? DateTime.now();
 
-    _accountText = billItem.accountText ?? '请选择';
-    _accountId = billItem.account;
+    final preferredAccount = billItem.accountText?.toString() ?? '请选择';
+    _accountId =
+        billItem.account ?? _toInt(widget.accountIndexs[preferredAccount]);
+    _accountText = _accountId == null ? '请选择' : preferredAccount;
 
-    _categoryText = billItem.categoryText ?? '请选择';
-    _categoryId = billItem.categoryId;
-    _selectedCategory = billItem.selectedCategory;
+    _applyBillCategoryForFlow(_flow);
 
     _transferOutText = _accountText;
     _transferOutId = _accountId;
 
     _transferInText = '请选择';
     _transferInId = null;
+  }
+
+  _BillListenerFlow _flowFromValue(dynamic value) {
+    switch (value?.toString()) {
+      case 'income':
+        return _BillListenerFlow.income;
+      case 'transfer':
+        return _BillListenerFlow.transfer;
+      default:
+        return _BillListenerFlow.consume;
+    }
+  }
+
+  void _applyBillCategoryForFlow(_BillListenerFlow flow) {
+    final billFlow = _flowFromValue(widget.billItem.flow);
+    final preferredCategory = widget.billItem.categoryText?.toString() ?? '请选择';
+
+    if (flow == _BillListenerFlow.transfer || flow != billFlow) {
+      _categoryText = '请选择';
+      _categoryId = null;
+      _selectedCategory = null;
+      return;
+    }
+
+    final categoryIndex =
+        flow == _BillListenerFlow.income
+            ? widget.incomeCategoryIndex
+            : widget.consumeCategoryIndex;
+    final categories =
+        flow == _BillListenerFlow.income
+            ? widget.incomeCategories
+            : widget.consumeCategories;
+
+    _categoryId =
+        widget.billItem.categoryId ?? _toInt(categoryIndex[preferredCategory]);
+    if (_categoryId == null) {
+      _categoryText = '请选择';
+      _selectedCategory = null;
+      return;
+    }
+
+    _categoryText = preferredCategory;
+    _selectedCategory =
+        widget.billItem.selectedCategory ??
+        findElementIndexes(categories, preferredCategory);
   }
 
   List get _currentCategories {
@@ -548,17 +604,7 @@ class _BillListenerEditorCardState extends State<_BillListenerEditorCard> {
     setState(() {
       _flow = flow;
 
-      if (flow == _BillListenerFlow.consume) {
-        _categoryText = widget.billItem.categoryText ?? '请选择';
-        _categoryId = widget.billItem.categoryId;
-        _selectedCategory = widget.billItem.selectedCategory;
-      }
-
-      if (flow == _BillListenerFlow.income) {
-        _categoryText = '请选择';
-        _categoryId = null;
-        _selectedCategory = null;
-      }
+      _applyBillCategoryForFlow(flow);
 
       if (flow == _BillListenerFlow.transfer) {
         _transferOutText = _accountText;

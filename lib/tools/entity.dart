@@ -47,6 +47,14 @@ class Bill {
   String categoryText;
   int? categoryId;
   String? source;
+  String flow;
+  String comment;
+  String? packageName;
+  String? rawTitle;
+  String? rawContent;
+  String? rawPayment;
+  String? matchedRuleId;
+  String? matchedRuleName;
 
   Bill({
     required this.id,
@@ -58,6 +66,14 @@ class Bill {
     this.categoryText = "请选择",
     this.categoryId,
     this.source,
+    this.flow = 'consume',
+    this.comment = '',
+    this.packageName,
+    this.rawTitle,
+    this.rawContent,
+    this.rawPayment,
+    this.matchedRuleId,
+    this.matchedRuleName,
   });
 
   factory Bill.fromMap(Map<String, dynamic> map, String id) {
@@ -69,7 +85,7 @@ class Bill {
           map['time'] is DateTime
               ? map['time']
               : DateTime.fromMillisecondsSinceEpoch(map['time'] ?? 0),
-      accountText: map['consumeAccountText'],
+      accountText: map['consumeAccountText']?.toString() ?? '请选择',
       selectedCategory:
           map['selectedCategory'] != null
               ? List<int>.from(map['selectedCategory'])
@@ -77,6 +93,14 @@ class Bill {
       categoryText: map['consumeCategoryText'] ?? "请选择",
       categoryId: map['categoryId'],
       source: map['source'],
+      flow: map['flow']?.toString() ?? 'consume',
+      comment: map['comment']?.toString() ?? '',
+      packageName: map['packageName']?.toString(),
+      rawTitle: map['rawTitle']?.toString(),
+      rawContent: map['rawContent']?.toString(),
+      rawPayment: map['rawPayment']?.toString(),
+      matchedRuleId: map['matchedRuleId']?.toString(),
+      matchedRuleName: map['matchedRuleName']?.toString(),
     );
   }
 
@@ -91,6 +115,14 @@ class Bill {
       'consumeCategoryText': categoryText,
       'categoryId': categoryId,
       'source': source,
+      'flow': flow,
+      'comment': comment,
+      'packageName': packageName,
+      'rawTitle': rawTitle,
+      'rawContent': rawContent,
+      'rawPayment': rawPayment,
+      'matchedRuleId': matchedRuleId,
+      'matchedRuleName': matchedRuleName,
     };
   }
 }

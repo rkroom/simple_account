@@ -10,11 +10,25 @@ import 'package:permission_handler/permission_handler.dart';
 import '../tools/config.dart';
 import '../tools/config_service.dart';
 import '../tools/entity.dart';
+import '../tools/local_auth_service.dart';
 import '../tools/native_method_channel.dart';
 import '../tools/tools.dart';
 import '../tools/workmanager_tool.dart';
 import '../widgets/app_selection_screen.dart';
-import '../tools/local_auth_service.dart';
+import 'bill_rule_config.dart';
+
+String buildListeningAppsSubtitle(List<PackageConfig> packages) {
+  final appNames = packages
+      .where(
+        (package) => package.isAllowed && package.packageName.trim().isNotEmpty,
+      )
+      .map((package) => package.appName.trim())
+      .where((name) => name.replaceAll(RegExp(r'[\s,.，。…]+'), '').isNotEmpty)
+      .toSet()
+      .toList(growable: false);
+  if (appNames.isEmpty) return '未配置应用';
+  return '预设：${appNames.join('，')}';
+}
 
 class ConfigurationWidget extends StatefulWidget {
   const ConfigurationWidget({super.key});
@@ -34,8 +48,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   bool _enableWindowContentChange = false;
   bool _enableRecordToast = true;
   bool _isLoading = true;
-  bool _savedAccConfig = false;
-  bool _savedNlConfig = false;
 
   int _taskHour = 0;
   int _taskMinute = 0;
@@ -112,9 +124,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
           await NativeMethodChannel.instance.getLogLevel();
       final String resolvedLogLevel = logLevelName ?? 'OFF';
 
-      final savedAcc = await ConfigService().getSavedAccConfig();
-      final savedNl = await ConfigService().getSavedNlConfig();
-
       // 每日任务
       final taskStatus = await ConfigService().getNotificationTaskStatus();
       final savedTime = await ConfigService().getNotificationTaskTime();
@@ -158,9 +167,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         _postNotificationChecked = postNoti;
         _enableWindowContentChange = enableWindowChange;
         _enableRecordToast = enableRecordToast;
-        _savedAccConfig = savedAcc;
-        _savedNlConfig = savedNl;
-
         _notificationTaskChecked = taskStatus;
         _taskHour = savedTime['hour']!;
         _taskMinute = savedTime['minute']!;
@@ -325,21 +331,6 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
         });
       },
     );
-  }
-
-  String _getSubtitleText(List<PackageConfig> packages) {
-    if (packages.isEmpty) {
-      return '未配置应用';
-    }
-    final allowedAppNames =
-        packages
-            .where((pkg) => pkg.isAllowed)
-            .map((pkg) => pkg.appName)
-            .toList();
-    if (allowedAppNames.isEmpty) {
-      return '当前无已允许的应用';
-    }
-    return allowedAppNames.join(', ');
   }
 
   Future<void> _handleResetSettings() async {
@@ -578,9 +569,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
     });
   }
 
-  Future<void> handlePendingBillNotificationToggle(
-    bool newCheckedState,
-  ) async {
+  Future<void> handlePendingBillNotificationToggle(bool newCheckedState) async {
     await ConfigService().setPendingBillNotificationTaskStatus(newCheckedState);
     if (newCheckedState) {
       await WorkmanagerTool.schedulePendingBillNotificationTask();
@@ -596,15 +585,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
   @override
   Widget build(BuildContext context) {
-    final String abSubtitle =
-        _savedAccConfig
-            ? _getSubtitleText(_abAllowedPackages)
-            : '预设：${_getSubtitleText(_abAllowedPackages)}';
+    final String abSubtitle = buildListeningAppsSubtitle(_abAllowedPackages);
 
-    final String nlSubtitle =
-        _savedNlConfig
-            ? _getSubtitleText(_nlAllowedPackages)
-            : '预设：${_getSubtitleText(_nlAllowedPackages)}';
+    final String nlSubtitle = buildListeningAppsSubtitle(_nlAllowedPackages);
     if (_isLoading) {
       return Scaffold(
         appBar: AppBar(title: const Text('配置')),
@@ -744,6 +727,22 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
             ),
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              title: const Text('账单解析规则'),
+              subtitle: const Text(
+                '配置金额识别及入账预填',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const BillRuleConfigPage(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
               title: const Text('通知发布权限'),
               trailing: Checkbox(
                 value: _postNotificationChecked,
@@ -761,7 +760,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
               title: const Text('指纹解锁应用'),
               subtitle: Text(
-                _biometricAvailable ? '开启后，下次启动应用需要验证指纹' : '当前设备未录入指纹或不支持生物识别',
+                _biometricAvailable ? '开启后，下次启动应用需要验证指纹' : '当前设备未录入指纹或不支持生物识别。',
                 style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
               trailing: Checkbox(
@@ -846,9 +845,9 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
             ),
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-              title: const Text('暂存账单提醒开关'),
+              title: const Text('暂存账单提醒'),
               subtitle: Text(
-                '每天 $pendingBillTimeLabel 检查暂存账单，有待处理账单时发送通知。',
+                '将每天检查暂存账单，有待处理账单时发送通知。',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
               trailing: Checkbox(
@@ -873,7 +872,7 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
               },
             ),
             ListTile(
-              title: const Text('暂存账单提醒时间'),
+              title: const Text('账单提醒时间'),
               subtitle: Text(pendingBillTimeLabel),
               trailing: IconButton(
                 icon: const Icon(Icons.access_time),

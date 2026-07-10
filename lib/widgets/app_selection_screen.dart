@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:installed_apps/app_info.dart';
 import 'package:installed_apps/installed_apps.dart';
 
+import '../pages/accessibility_rule_editor.dart';
 import '../tools/config_service.dart';
 import '../tools/entity.dart';
 import '../tools/native_method_channel.dart';
@@ -15,17 +16,25 @@ import '../tools/tools.dart';
 // acc AccessibilityService，nl NotificationListenerService
 enum ConfigType { acc, nl }
 
-Map<String, dynamic> _processAppsInIsolate(Map<String, dynamic> input) {
+@visibleForTesting
+Map<String, dynamic> processAppSelectionData(Map<String, dynamic> input) {
   final List<Map<String, dynamic>> apps = List<Map<String, dynamic>>.from(
     input['apps'] as List,
   );
   final List<Map<String, dynamic>> configPackages =
       List<Map<String, dynamic>>.from(input['config'] as List);
 
+  final installedPackageNames =
+      apps.map((app) => app['packageName'] as String).toSet();
+  final configuredSelected = <String>{};
   final selected = <String>{};
   for (var c in configPackages) {
-    if ((c['isAllowed'] ?? false) == true) {
-      selected.add(c['packageName'] as String);
+    final packageName = c['packageName']?.toString();
+    if ((c['isAllowed'] ?? false) == true && packageName != null) {
+      configuredSelected.add(packageName);
+      if (installedPackageNames.contains(packageName)) {
+        selected.add(packageName);
+      }
     }
   }
 
@@ -53,6 +62,7 @@ Map<String, dynamic> _processAppsInIsolate(Map<String, dynamic> input) {
     'selectedList': selected.toList(),
     'appNameLower': appNameLower,
     'appPkgLower': appPkgLower,
+    'selectionWasPruned': configuredSelected.length != selected.length,
   };
 }
 
@@ -248,7 +258,7 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
               )
               .toList();
 
-      final result = await compute(_processAppsInIsolate, {
+      final result = await compute(processAppSelectionData, {
         'apps': minimalApps,
         'config': minimalConfig,
       });
@@ -286,6 +296,10 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
 
         _isLoading = false;
       });
+
+      if (result['selectionWasPruned'] == true) {
+        await _writeAppSelectionNoUi();
+      }
 
       if (widget.configType == ConfigType.acc) {
         _extractionRules =
@@ -474,199 +488,33 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
     });
   }
 
-  void _validateRuleStructure(Map<String, dynamic> rule) {
-    if (rule['contentRules'] != null && rule['contentRules'] is! List) {
-      throw Exception('contentRules 必须是数组');
-    }
-    if (rule['paymentRules'] != null && rule['paymentRules'] is! List) {
-      throw Exception('paymentRules 必须是数组');
-    }
-    if (rule.containsKey('maxContentTriggerTimes') &&
-        rule['maxContentTriggerTimes'] is! int) {
-      throw Exception('maxContentTriggerTimes 必须是整数');
-    }
-
-    for (var key in ['contentRules', 'paymentRules']) {
-      if (rule.containsKey(key)) {
-        final list = rule[key] as List;
-        for (var i = 0; i < list.length; i++) {
-          final item = list[i];
-          if (item is! Map) throw Exception('$key 第 ${i + 1} 项必须是对象');
-
-          if (item.containsKey('keywords')) {
-            if (item['keywords'] is! List) {
-              throw Exception('$key 第 ${i + 1} 项 keywords 必须是数组');
-            }
-          }
-
-          _validateStrategy(item['strategy'], '$key[$i]');
-        }
-      }
-    }
-  }
-
-  void _validateStrategy(dynamic strategy, String path) {
-    if (strategy == null || strategy is! Map) {
-      throw Exception('$path: 缺少有效的 strategy 对象');
-    }
-
-    final type = strategy['type'];
-    final validTypes = const [
-      'SimpleOffset',
-      'ConditionalOffset',
-      'Concatenate',
-      'DirectViewId',
-      'ExtractByViewId',
-    ];
-
-    if (!validTypes.contains(type)) {
-      throw Exception('$path: 未知的策略类型 "$type"');
-    }
-
-    if (type == 'DirectViewId' || type == 'ExtractByViewId') {
-      if (strategy['viewId'] == null ||
-          strategy['viewId'].toString().trim().isEmpty) {
-        throw Exception('$path: $type 策略必须包含非空的 viewId');
-      }
-    }
-
-    if (type == 'SimpleOffset') {
-      if (strategy['offset'] == null || strategy['offset'] is! int) {
-        throw Exception('$path: SimpleOffset 策略必须包含整数类型的 offset');
-      }
-    }
-  }
-
-  Future<void> _showRuleEditorDialog(String packageName) async {
-    final rulesForPackage =
-        _extractionRules
-            .where((rule) => rule['packageName'] == packageName)
-            .toList();
-
-    final String initialText;
-    if (rulesForPackage.isEmpty) {
-      final defaultRule = [
-        {
-          "ruleName": "Rule for $packageName",
-          "packageName": packageName,
-          "activityName": "在此处填写activityName，支持后缀匹配",
-          "contentRules": [
-            {
-              "keywords": ["支付成功", "交易成功"],
-              "strategy": {
-                // 可用类型: SimpleOffset, ConditionalOffset, Concatenate, DirectViewId, ExtractByViewId
-                "type": "ExtractByViewId",
-                "viewId": "pkgname:id/view_id",
-                "useExactMatch": true,
-              },
-            },
-          ],
-          "paymentRules": [
-            {
-              "keywords": ["付款方式", "交易方式"],
-              "strategy": {
-                "type": "SimpleOffset",
-                "offset": 1,
-                "useExactMatch": false,
-              },
-            },
-          ],
-          "continueOnContentFailure": false,
-          "triggerOnEmptyNodes": false,
-          "emptyNodeTriggerCooldownMs": 120000,
-          "preFilterByKeywords": false,
-          "allowContentChangeTrigger": false,
-          "hasPaymentInfo": true,
-          "maxContentTriggerTimes": 2,
-          "dynamicRetryTimes": 0,
-          "dynamicRetryIntervalMs": 1000,
-        },
-      ];
-      initialText = _jsonEncoder.convert(defaultRule);
-    } else {
-      initialText = _jsonEncoder.convert(rulesForPackage);
-    }
-
-    final controller = TextEditingController(text: initialText);
+  Future<void> _openRuleEditor(String packageName) async {
+    final rulesForPackage = _extractionRules
+        .where((rule) => rule['packageName'] == packageName)
+        .map((rule) => Map<String, dynamic>.from(rule))
+        .toList(growable: false);
 
     if (!mounted) return;
-    await showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('编辑规则: $packageName'),
-          content: TextField(
-            controller: controller,
-            maxLines: 15,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: '输入 JSON 格式的规则',
+    final newRulesForPackage = await Navigator.of(
+      context,
+    ).push<List<Map<String, dynamic>>>(
+      MaterialPageRoute(
+        builder:
+            (context) => AccessibilityRuleEditorPage(
+              packageName: packageName,
+              initialRules: rulesForPackage,
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('取消'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                try {
-                  final newRulesJson = controller.text;
-                  final decoded = jsonDecode(newRulesJson);
-
-                  if (decoded is! List) {
-                    throw Exception('JSON 顶层必须是数组 (List)。');
-                  }
-
-                  final newRulesForPackage = <Map<String, dynamic>>[];
-                  for (var i = 0; i < decoded.length; i++) {
-                    final item = decoded[i];
-                    if (item is! Map) {
-                      throw Exception('第 ${i + 1} 项不是对象 (Map)。');
-                    }
-                    final map = Map<String, dynamic>.from(item);
-                    if (map['packageName'] != packageName) {
-                      throw Exception(
-                        '第 ${i + 1} 项的 packageName 必须是 "$packageName"。',
-                      );
-                    }
-
-                    final activityName = map['activityName'];
-                    if (activityName == null ||
-                        (activityName is! String) ||
-                        activityName.trim().isEmpty) {
-                      throw Exception('第 ${i + 1} 项规则缺少有效的 activityName 字段。');
-                    }
-
-                    try {
-                      _validateRuleStructure(map);
-                    } catch (e) {
-                      throw Exception(
-                        '第 ${i + 1} 项规则校验失败: ${e.toString().replaceAll("Exception: ", "")}',
-                      );
-                    }
-
-                    newRulesForPackage.add(map);
-                  }
-
-                  setState(() {
-                    _extractionRules.removeWhere(
-                      (rule) => rule['packageName'] == packageName,
-                    );
-                    _extractionRules.addAll(newRulesForPackage);
-                  });
-                  Navigator.of(context).pop();
-                  _saveExtractionRules();
-                } catch (e) {
-                  showNoticeSnackBar(context, '保存失败: $e');
-                }
-              },
-              child: const Text('保存'),
-            ),
-          ],
-        );
-      },
+      ),
     );
+    if (!mounted || newRulesForPackage == null) return;
+
+    setState(() {
+      _extractionRules.removeWhere(
+        (rule) => rule['packageName'] == packageName,
+      );
+      _extractionRules.addAll(newRulesForPackage);
+    });
+    await _saveExtractionRules();
   }
 
   /// 添加关键词
@@ -861,7 +709,7 @@ class _AppSelectionScreenState extends State<AppSelectionScreen> {
                   IconButton(
                     icon: const Icon(Icons.edit_note),
                     tooltip: '编辑提取规则',
-                    onPressed: () => _showRuleEditorDialog(app.packageName),
+                    onPressed: () => _openRuleEditor(app.packageName),
                   ),
                 Checkbox(
                   value: isChecked,
