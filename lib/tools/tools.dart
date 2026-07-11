@@ -1,6 +1,10 @@
+import 'dart:io';
 import 'dart:math';
+
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:simple_account/tools/config_service.dart';
 import 'package:simple_account/tools/notification_service.dart';
 import 'package:simple_account/tools/workmanager_tool.dart';
@@ -225,4 +229,25 @@ List<String> getMonthDateRange(DateTime date) {
       DateTime(lastDay.year, lastDay.month, lastDay.day, 23, 59, 59),
     ),
   ];
+}
+
+Future<bool> checkAndRequestStoragePermission() async {
+  if (Platform.isAndroid) {
+    final deviceInfo = DeviceInfoPlugin();
+    AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
+    if (androidInfo.version.sdkInt >= 29) {
+      return true;
+    }
+  }
+  PermissionStatus status = await Permission.storage.status;
+  if (status != PermissionStatus.granted) {
+    PermissionStatus requestStatus = await Permission.storage.request();
+    if (requestStatus.isDenied) {
+      return false;
+    } else if (requestStatus.isPermanentlyDenied) {
+      openAppSettings();
+      return false;
+    }
+  }
+  return true;
 }

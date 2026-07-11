@@ -109,29 +109,93 @@ class QuickSelectState extends State<QuickSelect> {
     );
   }
 
+  double _gridVisibleContentHeight({
+    required double width,
+    required int itemCount,
+  }) {
+    if (itemCount <= 0) return 0;
+
+    const double hPad = 6.0;
+    const double crossAxisSpacing = 8.0;
+    const double mainAxisSpacing = 8.0;
+    const int crossAxisCount = 3;
+    const double childAspectRatio = 2.0;
+
+    final int visibleCount = itemCount.clamp(0, _fixedItemCount);
+    final int rows = (visibleCount / crossAxisCount).ceil();
+
+    final double itemWidth =
+        (width - 2 * hPad - (crossAxisCount - 1) * crossAxisSpacing) /
+        crossAxisCount;
+
+    final double itemHeight = itemWidth / childAspectRatio;
+
+    return rows * itemHeight + (rows - 1) * mainAxisSpacing;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: _buildGrid(
-            items: categoryArray,
-            textKey: 'category',
-            onPressed: widget.categoryQuickSelect,
-          ),
-        ),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 5, horizontal: 6),
-          child: Divider(height: 1, thickness: 1, color: Colors.black26),
-        ),
-        Expanded(
-          child: _buildGrid(
-            items: accountArray,
-            textKey: 'name',
-            onPressed: widget.accountQuickSelect,
-          ),
-        ),
-      ],
+    final bool showDivider =
+        categoryArray.isNotEmpty && accountArray.isNotEmpty;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double width = constraints.maxWidth;
+        final double height = constraints.maxHeight;
+
+        const double dividerHeight = 1.0;
+
+        final double topAreaHeight = height / 2;
+
+        final double categoryContentHeight = _gridVisibleContentHeight(
+          width: width,
+          itemCount: categoryArray.length,
+        );
+
+        final double topContentBottom = categoryContentHeight;
+        final double bottomContentTop = topAreaHeight;
+
+        final double gap = bottomContentTop - topContentBottom;
+
+        final double dividerTop = topContentBottom + (gap - dividerHeight) / 2;
+
+        return Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: _buildGrid(
+                    items: categoryArray,
+                    textKey: 'category',
+                    onPressed: widget.categoryQuickSelect,
+                  ),
+                ),
+                Expanded(
+                  child: _buildGrid(
+                    items: accountArray,
+                    textKey: 'name',
+                    onPressed: widget.accountQuickSelect,
+                  ),
+                ),
+              ],
+            ),
+
+            if (showDivider && gap >= dividerHeight)
+              Positioned(
+                left: 6,
+                right: 6,
+                top: dividerTop,
+                child: const IgnorePointer(
+                  child: Divider(
+                    height: dividerHeight,
+                    thickness: dividerHeight,
+                    color: Colors.black26,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 
 import '../tools/bill_parse_rule.dart';
 import '../tools/config_service.dart';
@@ -258,6 +259,35 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
     await _persistRules(defaults.rules.toList(), message: '已恢复默认规则');
   }
 
+  void _showHelpDialog() {
+    showDialog<void>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('规则匹配说明'),
+            content: const SingleChildScrollView(
+              child: Text(
+                '规则匹配流程：\n\n'
+                '1. 候选筛选：仅启用且 packageName 与通知包名相同或为 * 的规则参与匹配。\n\n'
+                '2. 排序：精确包名优先于通配符 *；同组内按 priority 降序；同 priority 按列表先后。\n\n'
+                '3. 主匹配（决定金额/流向/分类/备注）：按顺序遍历，首条满足以下条件的规则即命中并停止：\n'
+                '   - 关键词条件：titleContainsAny、contentContainsAny、paymentContainsAny 三者均需命中（空数组视为命中；数组内任一关键词包含即命中，不区分大小写）；\n'
+                '   - 金额提取：amountPattern 非空时需从 amountSource 指定文本成功提取金额，否则跳过该规则；amountPattern 为空时跳过提取直接通过。amountGroup 指定使用哪个捕获组：0 为整个匹配，1 为第 1 个括号捕获组，以此类推；超出实际组数时该规则跳过。\n\n'
+                '4. 账户匹配（独立第二轮，顺序同上）：首条 accountName 非空且满足关键词条件的规则即命中。\n\n'
+                '5. 两轮独立：金额与账户可来自不同规则；账户名优先取账户匹配结果，其次取主匹配结果。\n\n'
+                '提示：内置通配符规则「通用两位小数金额」priority=0 且无关键词条件，会优先于 priority≤0 的通配符规则命中。若需自定义规则控制金额提取，请将其 priority 设为大于 0 的正数，或使用精确包名。',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+    );
+  }
+
   Future<void> _showJsonEditor() async {
     final document = await showDialog<BillParseRuleDocument>(
       context: context,
@@ -268,6 +298,25 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
     );
     if (document == null) return;
     await _persistRules(document.rules.toList(), message: 'JSON 规则已保存');
+  }
+
+  Future<void> _exportRules() async {
+    if (!await checkAndRequestStoragePermission()) return;
+    try {
+      final document = BillParseRuleDocument(rules: _rules);
+      final jsonString = document.toJsonString(pretty: true);
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final fileName = 'bill_rules_$timestamp.json';
+      final savedPath = await NativeMethodChannel.instance
+          .exportJsonToDownloads(jsonString, fileName);
+      if (mounted) {
+        showNoticeSnackBar(context, '规则已导出到: $savedPath');
+      }
+    } catch (error) {
+      if (mounted) {
+        showNoticeSnackBar(context, '导出规则失败: $error');
+      }
+    }
   }
 
   Future<void> _importJsonFile() async {
@@ -366,7 +415,7 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
     final extraction =
         rule.amountPattern.isEmpty
             ? '金额留空'
-            : '${_sourceLabel(rule.amountSource)} · 组 ${rule.amountGroup}';
+            : '金额来自${_sourceLabel(rule.amountSource)} ';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -380,16 +429,6 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
                   _packageTitle(rule.packageName),
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
-                if (rule.packageName == globalBillRulePackage) ...[
-                  const SizedBox(width: 3),
-                  Tooltip(
-                    message: '规则匹配将首先匹配packageName，如果未匹配成功则使用预置规则',
-                    triggerMode: TooltipTriggerMode.tap,
-                    showDuration: const Duration(seconds: 5),
-                    margin: const EdgeInsets.symmetric(horizontal: 10),
-                    child: Icon(Icons.info_outline, size: 16),
-                  ),
-                ],
               ],
             ),
           ),
@@ -432,11 +471,16 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
     final rules = _sortedRules;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('账单解析规则'),
+        title: const Text('规则'),
         actions: [
           IconButton(
-            tooltip: '导入 JSON 文件',
+            tooltip: '导出所有规则',
             icon: const Icon(Icons.file_open),
+            onPressed: _isLoading || _isSaving ? null : _exportRules,
+          ),
+          IconButton(
+            tooltip: '导入 JSON 文件',
+            icon: const Icon(Icons.file_download),
             onPressed: _isLoading || _isSaving ? null : _importJsonFile,
           ),
           IconButton(
@@ -448,6 +492,11 @@ class _BillRuleConfigPageState extends State<BillRuleConfigPage> {
             tooltip: '恢复默认规则',
             icon: const Icon(Icons.restore),
             onPressed: _isLoading || _isSaving ? null : _restoreDefaults,
+          ),
+          IconButton(
+            tooltip: '规则说明',
+            icon: const Icon(Icons.help_outline),
+            onPressed: _showHelpDialog,
           ),
         ],
       ),

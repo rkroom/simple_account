@@ -406,6 +406,8 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
 
     if (confirmExport != true) return;
 
+    if (!await checkAndRequestStoragePermission()) return;
+
     setState(() => _isLoading = true);
     try {
       final abConfig =

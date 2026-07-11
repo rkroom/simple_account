@@ -2,12 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
-import 'package:permission_handler/permission_handler.dart';
 
 import '../tools/config.dart';
 import '../tools/config_service.dart';
@@ -118,29 +116,6 @@ class HomeWidgetState extends State<HomeWidget> {
       await WorkmanagerTool.setupAndScheduleTasks();
       return;
     }
-  }
-
-  /// 判断是否需要检测存储权限
-  /// 当设备为 Android 且 API level >= 29 时，不检测存储权限
-  Future<bool> checkAndRequestStoragePermission() async {
-    if (Platform.isAndroid) {
-      final deviceInfo = DeviceInfoPlugin();
-      AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
-      if (androidInfo.version.sdkInt >= 29) {
-        return true;
-      }
-    }
-    PermissionStatus status = await Permission.storage.status;
-    if (status != PermissionStatus.granted) {
-      PermissionStatus requestStatus = await Permission.storage.request();
-      if (requestStatus.isDenied) {
-        return false;
-      } else if (requestStatus.isPermanentlyDenied) {
-        openAppSettings();
-        return false;
-      }
-    }
-    return true;
   }
 
   @override
