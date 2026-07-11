@@ -17,6 +17,18 @@ class MainApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         initLogging()
+        initializePendingBillCount()
+    }
+
+    private fun initializePendingBillCount() {
+        applicationScope.launch {
+            try {
+                BillDataStoreManager.getInstance(this@MainApplication)
+                        .refreshPendingBillCount()
+            } catch (e: Exception) {
+                AppLog.e(e) { "初始化暂存账单数量失败" }
+            }
+        }
     }
 
     private fun initLogging() {

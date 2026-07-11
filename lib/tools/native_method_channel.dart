@@ -54,6 +54,11 @@ class NativeMethodChannel {
     return await _channel.invokeMethod('getBills');
   }
 
+  Future<int> refreshPendingBillCount() async {
+    final count = await _channel.invokeMethod<int>('refreshPendingBillCount');
+    return count ?? 0;
+  }
+
   Future clearBills() async {
     final count = await _channel.invokeMethod('clearBills');
     return count;

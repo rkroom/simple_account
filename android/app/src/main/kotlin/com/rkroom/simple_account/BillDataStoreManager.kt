@@ -7,12 +7,16 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -23,12 +27,14 @@ private val Context.billDataStore: DataStore<Preferences> by
 class BillDataStoreManager private constructor(private val context: Context) {
 
     private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val storeMutex = Mutex()
 
     companion object :
             SingletonHolder<BillDataStoreManager, Context>({
                 BillDataStoreManager(it.applicationContext)
             }) {
         private val BILLS_KEY = stringPreferencesKey("bills")
+        private const val PENDING_BILL_COUNT_FILE = "pending_bill_count"
     }
 
     private val json = Json {
@@ -48,18 +54,26 @@ class BillDataStoreManager private constructor(private val context: Context) {
     }
 
     /** 获取所有账单 */
-    suspend fun getBills(): List<String> {
-        val bills =
-                context.billDataStore
-                        .data
-                        .map { preferences -> getBillsFromPreferences(preferences) }
-                        .first()
+    suspend fun getBills(): List<String> = storeMutex.withLock {
+        val bills = context.billDataStore.data
+                .map { preferences -> getBillsFromPreferences(preferences) }
+                .first()
 
-        return bills.map { json.encodeToString(it) }
+        writePendingBillCount(bills.size)
+        bills.map { json.encodeToString(it) }
+    }
+
+    suspend fun refreshPendingBillCount(): Int = storeMutex.withLock {
+        val count = context.billDataStore.data
+                .map { preferences -> getBillsFromPreferences(preferences).size }
+                .first()
+        writePendingBillCount(count)
+        count
     }
 
     /** 删除指定ID的账单 */
-    suspend fun delBill(id: String) {
+    suspend fun delBill(id: String) = storeMutex.withLock {
+        var pendingBillCount = 0
         context.billDataStore.edit { preferences ->
             val currentBills = getBillsFromPreferences(preferences).toMutableList()
             val removed = currentBills.removeAll { it.id == id }
@@ -69,12 +83,15 @@ class BillDataStoreManager private constructor(private val context: Context) {
             } else {
                 AppLog.w { "BillStore: 未找到要删除的记录 ID: $id" }
             }
+            pendingBillCount = currentBills.size
         }
+        writePendingBillCount(pendingBillCount)
     }
 
     /** 清空所有账单 */
-    suspend fun clearBills() {
+    suspend fun clearBills() = storeMutex.withLock {
         context.billDataStore.edit { preferences -> preferences.remove(BILLS_KEY) }
+        writePendingBillCount(0)
         AppLog.i { "BillStore: 已清空所有账单" }
     }
 
@@ -104,7 +121,8 @@ class BillDataStoreManager private constructor(private val context: Context) {
     }
 
     /** 添加或更新账单 */
-    suspend fun addOrUpdateBill(billData: BillData) {
+    suspend fun addOrUpdateBill(billData: BillData) = storeMutex.withLock {
+        var pendingBillCount = 0
         context.billDataStore.edit { preferences ->
             val currentBills = getBillsFromPreferences(preferences).toMutableList()
 
@@ -129,6 +147,23 @@ class BillDataStoreManager private constructor(private val context: Context) {
                 AppLog.i { "BillStore: 新增记录: ${billData.id}" }
             }
             saveBillsToPreferences(preferences, currentBills)
+            pendingBillCount = currentBills.size
+        }
+        writePendingBillCount(pendingBillCount)
+    }
+
+    private suspend fun writePendingBillCount(count: Int) = withContext(Dispatchers.IO) {
+        try {
+            val target = File(context.filesDir, PENDING_BILL_COUNT_FILE)
+            val temporary = File(context.filesDir, "$PENDING_BILL_COUNT_FILE.native.tmp")
+            val value = count.coerceAtLeast(0).toString()
+            temporary.writeText(value)
+            if (!temporary.renameTo(target)) {
+                target.writeText(value)
+                temporary.delete()
+            }
+        } catch (e: Exception) {
+            AppLog.e(e) { "BillStore: 更新暂存账单数量失败" }
         }
     }
 
