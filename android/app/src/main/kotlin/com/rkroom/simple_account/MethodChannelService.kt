@@ -114,36 +114,33 @@ class MethodChannelService {
                                         null
                                 )
                             } else {
-                                val uri =
-                                        createDownloadUri(
-                                                activity,
-                                                fileName,
-                                                "application/octet-stream"
-                                        )
-                                if (uri == null) {
-                                    result.error(
-                                            "UNAVAILABLE",
-                                            "Cannot create export file URI",
-                                            null
-                                    )
-                                } else {
-                                    try {
-                                        activity.applicationContext.contentResolver
-                                                .openOutputStream(uri)
-                                                ?.use { outputStream ->
-                                                    File(sourcePath).inputStream().use { inputStream
-                                                        ->
-                                                        inputStream.copyTo(outputStream)
-                                                    }
-                                                }
-                                        result.success(getDownloadFilePath(activity, uri, fileName))
-                                    } catch (e: Exception) {
+                                try {
+                                    val destination =
+                                            createDownloadDestination(
+                                                    activity,
+                                                    fileName,
+                                                    "application/octet-stream"
+                                            )
+                                    if (destination == null) {
                                         result.error(
-                                                "IO_ERROR",
-                                                "File copy failed: ${e.message}",
+                                                "UNAVAILABLE",
+                                                "Cannot create export destination",
                                                 null
                                         )
+                                    } else {
+                                        destination.outputStream.use { outputStream ->
+                                            File(sourcePath).inputStream().use { inputStream ->
+                                                inputStream.copyTo(outputStream)
+                                            }
+                                        }
+                                        result.success(destination.displayPath)
                                     }
+                                } catch (e: Exception) {
+                                    result.error(
+                                            "IO_ERROR",
+                                            "File copy failed: ${e.message}",
+                                            null
+                                    )
                                 }
                             }
                         }
@@ -158,28 +155,31 @@ class MethodChannelService {
                                         null
                                 )
                             } else {
-                                val uri = createDownloadUri(activity, fileName, "application/json")
-                                if (uri == null) {
-                                    result.error(
-                                            "UNAVAILABLE",
-                                            "Cannot create export file URI",
-                                            null
-                                    )
-                                } else {
-                                    try {
-                                        activity.applicationContext.contentResolver
-                                                .openOutputStream(uri)
-                                                ?.use { outputStream ->
-                                                    outputStream.write(fileContent.toByteArray())
-                                                }
-                                        result.success(getDownloadFilePath(activity, uri, fileName))
-                                    } catch (e: Exception) {
+                                try {
+                                    val destination =
+                                            createDownloadDestination(
+                                                    activity,
+                                                    fileName,
+                                                    "application/json"
+                                            )
+                                    if (destination == null) {
                                         result.error(
-                                                "IO_ERROR",
-                                                "File write failed: ${e.message}",
+                                                "UNAVAILABLE",
+                                                "Cannot create export destination",
                                                 null
                                         )
+                                    } else {
+                                        destination.outputStream.use { outputStream ->
+                                            outputStream.write(fileContent.toByteArray())
+                                        }
+                                        result.success(destination.displayPath)
                                     }
+                                } catch (e: Exception) {
+                                    result.error(
+                                            "IO_ERROR",
+                                            "File write failed: ${e.message}",
+                                            null
+                                    )
                                 }
                             }
                         }

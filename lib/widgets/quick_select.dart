@@ -2,6 +2,36 @@ import 'package:flutter/material.dart';
 
 import '../tools/db.dart';
 
+double? calculateQuickSelectDividerTop({
+  required double width,
+  required double height,
+  required int categoryItemCount,
+  required int accountItemCount,
+}) {
+  if (categoryItemCount <= 0 || accountItemCount <= 0) return null;
+
+  const hPad = 6.0;
+  const crossAxisSpacing = 8.0;
+  const mainAxisSpacing = 8.0;
+  const crossAxisCount = 3;
+  const childAspectRatio = 2.0;
+  const fixedItemCount = 6;
+  const dividerHeight = 1.0;
+
+  final visibleCount = categoryItemCount.clamp(0, fixedItemCount);
+  final rows = (visibleCount / crossAxisCount).ceil();
+  final itemWidth =
+      (width - 2 * hPad - (crossAxisCount - 1) * crossAxisSpacing) /
+      crossAxisCount;
+  final itemHeight = itemWidth / childAspectRatio;
+  final categoryContentHeight =
+      rows * itemHeight + (rows - 1) * mainAxisSpacing;
+  final gap = height / 2 - categoryContentHeight;
+  if (gap < dividerHeight) return null;
+
+  return categoryContentHeight + (gap - dividerHeight) / 2;
+}
+
 class QuickSelect extends StatefulWidget {
   final String flow;
   final void Function(dynamic item) accountQuickSelect;
@@ -109,55 +139,18 @@ class QuickSelectState extends State<QuickSelect> {
     );
   }
 
-  double _gridVisibleContentHeight({
-    required double width,
-    required int itemCount,
-  }) {
-    if (itemCount <= 0) return 0;
-
-    const double hPad = 6.0;
-    const double crossAxisSpacing = 8.0;
-    const double mainAxisSpacing = 8.0;
-    const int crossAxisCount = 3;
-    const double childAspectRatio = 2.0;
-
-    final int visibleCount = itemCount.clamp(0, _fixedItemCount);
-    final int rows = (visibleCount / crossAxisCount).ceil();
-
-    final double itemWidth =
-        (width - 2 * hPad - (crossAxisCount - 1) * crossAxisSpacing) /
-        crossAxisCount;
-
-    final double itemHeight = itemWidth / childAspectRatio;
-
-    return rows * itemHeight + (rows - 1) * mainAxisSpacing;
-  }
-
   @override
   Widget build(BuildContext context) {
-    final bool showDivider =
-        categoryArray.isNotEmpty && accountArray.isNotEmpty;
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final double width = constraints.maxWidth;
         final double height = constraints.maxHeight;
-
-        const double dividerHeight = 1.0;
-
-        final double topAreaHeight = height / 2;
-
-        final double categoryContentHeight = _gridVisibleContentHeight(
+        final dividerTop = calculateQuickSelectDividerTop(
           width: width,
-          itemCount: categoryArray.length,
+          height: height,
+          categoryItemCount: categoryArray.length,
+          accountItemCount: accountArray.length,
         );
-
-        final double topContentBottom = categoryContentHeight;
-        final double bottomContentTop = topAreaHeight;
-
-        final double gap = bottomContentTop - topContentBottom;
-
-        final double dividerTop = topContentBottom + (gap - dividerHeight) / 2;
 
         return Stack(
           children: [
@@ -180,15 +173,15 @@ class QuickSelectState extends State<QuickSelect> {
               ],
             ),
 
-            if (showDivider && gap >= dividerHeight)
+            if (dividerTop != null)
               Positioned(
                 left: 6,
                 right: 6,
                 top: dividerTop,
                 child: const IgnorePointer(
                   child: Divider(
-                    height: dividerHeight,
-                    thickness: dividerHeight,
+                    height: 1,
+                    thickness: 1,
                     color: Colors.black26,
                   ),
                 ),

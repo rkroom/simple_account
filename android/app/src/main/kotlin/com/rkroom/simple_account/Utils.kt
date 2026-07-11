@@ -3,52 +3,31 @@ package com.rkroom.simple_account
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.ComponentName
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.Process
-import android.provider.MediaStore
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
-fun createDownloadUri(context: Context, fileName: String, mimeType: String): Uri? {
-    val contentValues =
-            ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, mimeType)
-                put(MediaStore.Downloads.DATE_ADDED, System.currentTimeMillis() / 1000)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                }
-            }
-    return context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-}
-
-fun getDownloadFilePath(context: Context, uri: Uri, defaultFileName: String): String {
-    val projection = arrayOf(MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.RELATIVE_PATH)
-    val cursor = context.contentResolver.query(uri, projection, null, null, null)
-
-    cursor?.use { c ->
-        if (c.moveToFirst()) {
-            val displayName =
-                    c.getString(c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME))
-            val relativePath =
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        c.getString(c.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH))
-                                ?: Environment.DIRECTORY_DOWNLOADS
-                    } else {
-                        Environment.DIRECTORY_DOWNLOADS
-                    }
-            val cleanPath = relativePath.removeSuffix("/").replace("//", "/")
-            return "$cleanPath/$displayName"
+internal fun createDownloadDestination(
+        context: Context,
+        fileName: String,
+        mimeType: String,
+): DownloadDestination? {
+    return when (downloadStorageStrategy(Build.VERSION.SDK_INT)) {
+        DownloadStorageStrategy.LEGACY_FILE -> {
+            @Suppress("DEPRECATION")
+            val downloadDirectory =
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            createLegacyDownloadDestination(downloadDirectory, fileName)
         }
+        DownloadStorageStrategy.MEDIA_STORE ->
+                createMediaStoreDownloadDestination(context, fileName, mimeType)
     }
-    return "${Environment.DIRECTORY_DOWNLOADS}/$defaultFileName"
 }
 
 fun ensureCollectorRunning(context: Context): Boolean {

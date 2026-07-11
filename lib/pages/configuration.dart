@@ -7,6 +7,8 @@ import 'package:flutter_datetime_picker_plus/flutter_datetime_picker_plus.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../tools/automatic_service_config.dart';
+import '../tools/bill_parse_rule.dart';
 import '../tools/config.dart';
 import '../tools/config_service.dart';
 import '../tools/entity.dart';
@@ -389,7 +391,10 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('导出配置'),
-          content: const Text('您要将当前的自动服务配置导出为一个 JSON 文件吗？'),
+          content: const Text(
+            '您要将当前的自动服务配置导出为一个 JSON 文件吗？'
+            '系统功能权限无法随配置文件迁移。',
+          ),
           actions: <Widget>[
             TextButton(
               child: const Text('取消'),
@@ -417,19 +422,26 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
       final keywords =
           await NativeMethodChannel.instance.getAllowKeywords() ?? [];
       final rules = await NativeMethodChannel.instance.getExtractionRules();
+      final enableWindowContentChange =
+          await NativeMethodChannel.instance.getEnableWindowContentChange();
       final enableRecordToast =
           await NativeMethodChannel.instance.getEnableRecordToast();
+      final billParseRules = BillParseRuleDocument.fromJsonString(
+        await ConfigService().getBillParseRulesJson(),
+      );
 
-      final allConfigs = {
-        'abPackageConfig': abConfig,
-        'nlPackageConfig': nlConfig,
-        'nlKeywords': keywords,
-        'extractionRules': rules,
-        'enableRecordToast': enableRecordToast,
-      };
+      final allConfigs = AutomaticServiceConfig(
+        accessibilityPackageConfig: abConfig,
+        notificationPackageConfig: nlConfig,
+        notificationKeywords: keywords,
+        accessibilityExtractionRules: rules,
+        enableWindowContentChange: enableWindowContentChange,
+        enableRecordToast: enableRecordToast,
+        billParseRules: billParseRules,
+      );
 
       const jsonEncoder = JsonEncoder.withIndent('  ');
-      final jsonString = jsonEncoder.convert(allConfigs);
+      final jsonString = jsonEncoder.convert(allConfigs.toJson());
 
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
       final fileName = 'config_$timestamp.json';
@@ -452,80 +464,69 @@ class ConfigurationWidgetState extends State<ConfigurationWidget>
   }
 
   Future<void> _handleImportSettings() async {
-    final confirmImport = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('导入配置'),
-          content: const Text('您确定要导入配置文件吗？此操作将清空并覆盖您当前的自动服务设置。'),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
-            ),
-            TextButton(
-              child: const Text('确定导入'),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmImport != true) return;
-
     try {
-      FilePickerResult? result = await FilePicker.pickFiles(
+      final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
 
       if (result != null && result.files.single.path != null) {
-        setState(() => _isLoading = true);
         final filePath = result.files.single.path!;
         final file = File(filePath);
         final jsonString = await file.readAsString();
-        final decodedJson = jsonDecode(jsonString) as Map<String, dynamic>;
+        final importedConfig = AutomaticServiceConfig.fromJson(
+          jsonDecode(jsonString),
+        );
 
-        final abConfigRaw = decodedJson['abPackageConfig'];
-        final nlConfigRaw = decodedJson['nlPackageConfig'];
-        final keywordsRaw = decodedJson['nlKeywords'];
-        final rulesRaw = decodedJson['extractionRules'];
-        final enableRecordToastRaw = decodedJson['enableRecordToast'];
+        if (!mounted) return;
+        final confirmImport = await showDialog<bool>(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Text('导入配置'),
+              content: const Text(
+                '您确定要导入配置文件吗？此操作将清空并覆盖您当前的自动服务设置。'
+                '此操作无法撤销。系统授予的辅助功能权限仍需手动开启。',
+              ),
+              actions: <Widget>[
+                TextButton(
+                  child: const Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                FilledButton(
+                  child: const Text('覆盖导入'),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
+            );
+          },
+        );
+        if (confirmImport != true) return;
 
-        if (abConfigRaw is! List ||
-            nlConfigRaw is! List ||
-            keywordsRaw is! List ||
-            (rulesRaw != null && rulesRaw is! List) ||
-            (enableRecordToastRaw != null && enableRecordToastRaw is! bool)) {
-          throw Exception('配置文件格式无效。');
-        }
-
-        final abConfig =
-            (abConfigRaw)
-                .map((item) => Map<String, dynamic>.from(item as Map))
-                .toList();
-        final nlConfig =
-            (nlConfigRaw)
-                .map((item) => Map<String, dynamic>.from(item as Map))
-                .toList();
-        final keywords = (keywordsRaw).map((item) => item.toString()).toList();
-        final rules =
-            (rulesRaw as List<dynamic>?)
-                ?.map((item) => Map<String, dynamic>.from(item as Map))
-                .toList() ??
-            [];
+        setState(() => _isLoading = true);
 
         await NativeMethodChannel.instance.clearAllConfig();
-        await NativeMethodChannel.instance.putAbAllowPackageConfig(abConfig);
-        await NativeMethodChannel.instance.putNlAllowPackageConfig(nlConfig);
-        await NativeMethodChannel.instance.putAllowKeywords(keywords);
-        await NativeMethodChannel.instance.putExtractionRules(rules);
-        if (enableRecordToastRaw is bool) {
-          await NativeMethodChannel.instance.putEnableRecordToast(
-            enableRecordToastRaw,
-          );
-        }
+        await NativeMethodChannel.instance.putAbAllowPackageConfig(
+          importedConfig.accessibilityPackageConfig,
+        );
+        await NativeMethodChannel.instance.putNlAllowPackageConfig(
+          importedConfig.notificationPackageConfig,
+        );
+        await NativeMethodChannel.instance.putAllowKeywords(
+          importedConfig.notificationKeywords,
+        );
+        await NativeMethodChannel.instance.putExtractionRules(
+          importedConfig.accessibilityExtractionRules,
+        );
+        await NativeMethodChannel.instance.putEnableWindowContentChange(
+          importedConfig.enableWindowContentChange,
+        );
+        await NativeMethodChannel.instance.putEnableRecordToast(
+          importedConfig.enableRecordToast,
+        );
+        await ConfigService().setBillParseRulesJson(
+          importedConfig.billParseRules.toJsonString(),
+        );
 
         if (mounted) {
           showNoticeSnackBar(context, '配置已成功导入');
