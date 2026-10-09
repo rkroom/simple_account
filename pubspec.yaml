@@ -59,7 +59,9 @@ dependencies:
   #本地通知
   flutter_local_notifications: ^21.0.0
   #定时任务
-  workmanager: ^0.7.0
+  workmanager: ^0.9.0+3
+  pending_bill_plugin:
+    path: packages/pending_bill_plugin
   #安全存储
   flutter_secure_storage: ^10.1.0
   #设备信息

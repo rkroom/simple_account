@@ -13,6 +13,7 @@ class NotificationService {
 
   final FlutterLocalNotificationsPlugin _flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
+  bool _isInitialized = false;
 
   static const AndroidNotificationDetails _statisticsChannelSpecifics =
       AndroidNotificationDetails(
@@ -51,6 +52,10 @@ class NotificationService {
       NotificationDetails(android: _pendingBillChannelSpecifics);
 
   Future<void> initNotification() async {
+    if (_isInitialized) {
+      return;
+    }
+
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
@@ -68,6 +73,7 @@ class NotificationService {
         }
       },
     );
+    _isInitialized = true;
   }
 
   Future<void> showNotification(int id, String title, String body) async {
@@ -108,17 +114,15 @@ class NotificationService {
     );
   }
 
-  Future<void> checkAppLaunchFromNotification() async {
+  Future<String?> getNotificationLaunchPayload() async {
     final NotificationAppLaunchDetails? notificationAppLaunchDetails =
         await _flutterLocalNotificationsPlugin
             .getNotificationAppLaunchDetails();
 
-    if (notificationAppLaunchDetails?.didNotificationLaunchApp ?? false) {
-      final String? payload =
-          notificationAppLaunchDetails?.notificationResponse?.payload;
-      if (payload != null) {
-        selectNotificationStream.add(payload);
-      }
+    if (!(notificationAppLaunchDetails?.didNotificationLaunchApp ?? false)) {
+      return null;
     }
+
+    return notificationAppLaunchDetails?.notificationResponse?.payload;
   }
 }

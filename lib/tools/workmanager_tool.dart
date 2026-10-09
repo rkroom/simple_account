@@ -1,15 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:pending_bill_plugin/pending_bill_plugin.dart';
 import 'package:workmanager/workmanager.dart';
 
 import 'config_enum.dart';
 import 'config_service.dart';
 import 'db.dart';
 import 'entity.dart';
-import 'native_method_channel.dart';
 import 'notification_service.dart';
-import 'pending_bill_cache.dart';
 import 'schedule_notification_helper.dart';
 import 'schedule_rule_helper.dart';
 import 'tools.dart';
@@ -76,9 +75,7 @@ void callbackDispatcher() {
         await WorkmanagerTool.scheduleNotificationTask();
       } else if (task == WorkmanagerTasks.pendingBillTaskName &&
           await ConfigService().getPendingBillNotificationTaskStatus()) {
-        await WorkmanagerTool.schedulePendingBillNotificationTask(
-          refreshCache: false,
-        );
+        await WorkmanagerTool.schedulePendingBillNotificationTask();
       }
     }
   });
@@ -91,10 +88,7 @@ class WorkmanagerTool {
     if (_isInitialized) {
       return;
     }
-    await Workmanager().initialize(
-      callbackDispatcher,
-      isInDebugMode: kDebugMode,
-    );
+    await Workmanager().initialize(callbackDispatcher);
     _isInitialized = true;
   }
 
@@ -139,17 +133,7 @@ class WorkmanagerTool {
     );
   }
 
-  static Future<void> schedulePendingBillNotificationTask({
-    bool refreshCache = true,
-  }) async {
-    if (refreshCache) {
-      try {
-        await NativeMethodChannel.instance.refreshPendingBillCount();
-      } catch (e) {
-        debugPrint('刷新暂存账单数量失败: $e');
-      }
-    }
-
+  static Future<void> schedulePendingBillNotificationTask() async {
     await _scheduleGenericTask(
       uniqueName: WorkmanagerTasks.pendingBillUniqueName,
       taskName: WorkmanagerTasks.pendingBillTaskName,
@@ -208,7 +192,7 @@ class WorkmanagerTool {
 }
 
 Future<void> handlePendingBillNotifications() async {
-  final pendingBillCount = await PendingBillCache().readCount();
+  final pendingBillCount = await PendingBillPlugin.getPendingBillCount();
 
   if (pendingBillCount <= 0) {
     return;

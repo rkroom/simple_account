@@ -2,6 +2,8 @@ package com.rkroom.simple_account
 
 import android.app.Application
 import android.util.Log
+import com.rkroom.pending_bill_plugin.PendingBillCountProvider
+import com.rkroom.pending_bill_plugin.PendingBillPlugin
 import io.flutter.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,19 +18,19 @@ class MainApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        registerPendingBillCountProvider()
         initLogging()
-        initializePendingBillCount()
     }
 
-    private fun initializePendingBillCount() {
-        applicationScope.launch {
-            try {
-                BillDataStoreManager.getInstance(this@MainApplication)
-                        .refreshPendingBillCount()
-            } catch (e: Exception) {
-                AppLog.e(e) { "初始化暂存账单数量失败" }
-            }
-        }
+    private fun registerPendingBillCountProvider() {
+        PendingBillPlugin.setPendingBillCountProvider(
+                object : PendingBillCountProvider {
+                    override suspend fun getPendingBillCount(): Int {
+                        return BillDataStoreManager.getInstance(this@MainApplication)
+                                .getPendingBillCount()
+                    }
+                }
+        )
     }
 
     private fun initLogging() {

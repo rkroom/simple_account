@@ -20,6 +20,7 @@ jobs:
         uses: subosito/flutter-action@main
         with:
           channel: stable
+          flutter-version: 3.38.6
           cache: true
 
       - name: Check/Set ANDROID_SDK_ROOT

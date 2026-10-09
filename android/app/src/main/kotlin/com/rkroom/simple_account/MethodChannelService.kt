@@ -87,9 +87,6 @@ class MethodChannelService {
                         "getBills" -> {
                             result.success(billManager.getBills())
                         }
-                        "refreshPendingBillCount" -> {
-                            result.success(billManager.refreshPendingBillCount())
-                        }
                         "clearBills" -> {
                             billManager.clearBills()
                             result.success(true)

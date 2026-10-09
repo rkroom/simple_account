@@ -67,26 +67,14 @@ class HomeWidgetState extends State<HomeWidget> {
   void _configureSelectNotificationListener() {
     _notificationSubscription = selectNotificationStream.stream.listen((
       String? payload,
-    ) async {
+    ) {
       if (payload == '/home/schedule') {
         if (!mounted) return;
         setState(() {
           _selectedHome = 1;
         });
-      } else if (payload == '/statistic') {
-        if (mounted) {
-          Navigator.of(context).pushNamed('/statistic');
-        }
-      } else if (payload == '/billListener') {
-        if (mounted) {
-          Navigator.of(context).pushNamed('/billListener');
-        }
       }
     });
-  }
-
-  void _checkAppLaunchFromNotification() {
-    NotificationService().checkAppLaunchFromNotification();
   }
 
   void checkAndSetWorkmanagerTasks() async {
@@ -123,7 +111,6 @@ class HomeWidgetState extends State<HomeWidget> {
     super.initState();
 
     _configureSelectNotificationListener();
-    _checkAppLaunchFromNotification();
     checkAndSetWorkmanagerTasks();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
